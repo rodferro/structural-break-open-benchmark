@@ -12,6 +12,8 @@ training rows only, so it can be nested inside an outer CV loop.
 
 from __future__ import annotations
 
+import re
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -51,6 +53,19 @@ def select_features(F_raw: pd.DataFrame, y: pd.Series, cfg: Config) -> tuple[lis
     return base, final
 
 
+_V1_MC = re.compile(r"^mc_(mean|std|med)_b\d+_a\d+$")
+_V2_MC = re.compile(r"^mc_(mean|std|med)_b\d+_a[123]x$")
+
+
+def _detect_feature_set(columns) -> str | None:
+    """'v1' / 'v2+' from the multi-context column naming, None if undecidable."""
+    if any(_V1_MC.match(c) for c in columns):
+        return "v1"
+    if any(_V2_MC.match(c) for c in columns):
+        return "v2+"
+    return None
+
+
 def apply_selection(F_raw: pd.DataFrame, base: list[str], final: list[str], cfg: Config) -> pd.DataFrame:
     """Rebuild the model matrix for new rows from the stored feature lists.
 
@@ -59,6 +74,13 @@ def apply_selection(F_raw: pd.DataFrame, base: list[str], final: list[str], cfg:
     rows that lack them contained. Submission #28 filled them with 0.0, a
     silent train/infer skew for LightGBM.
     """
+    detected = _detect_feature_set(F_raw.columns)
+    expected = "v1" if cfg.feature_set == "v1" else "v2+"
+    if detected is not None and detected != expected:
+        raise ValueError(
+            f"features look like {detected!r} but the model was trained on feature_set="
+            f"{cfg.feature_set!r}; build features with feature_set={cfg.feature_set!r}"
+        )
     F_base = F_raw.reindex(columns=base, fill_value=np.nan)
     F_int = add_interactions(F_base, top_features=base, top_k=cfg.n_interact)
     return F_int.reindex(columns=final, fill_value=np.nan)

@@ -24,7 +24,7 @@ def trained(tmp_path_factory):
     X, y = make_dataset(160, seed=1)
     p = train(X, y, str(model_dir), cfg=smoke_config())
     X_test, _ = make_dataset(30, seed=2)
-    F_test = build_feature_table(X_test)
+    F_test = build_feature_table(X_test, feature_set=p.cfg.feature_set)
     return model_dir, p, X_test, p.predict(F_test)
 
 
@@ -48,12 +48,18 @@ def test_manifest_lists_existing_files(trained):
 def test_every_model_loads_and_predicts(trained):
     model_dir, p, X_test, _ = trained
     loaded = load_pipeline(model_dir)
-    F = loaded.model_matrix(build_feature_table(X_test))
+    F = loaded.model_matrix(build_feature_table(X_test, feature_set=loaded.cfg.feature_set))
     for name, models in loaded.ensemble.fold_models.items():
         assert len(models) == p.cfg.n_splits
         for m in models:
             pred = m.predict(F)
             assert pred.shape == (len(F),) and np.isfinite(pred).all(), name
+
+
+def test_wrong_feature_set_is_rejected(trained):
+    _, p, X_test, _ = trained
+    with pytest.raises(ValueError, match="feature_set"):
+        p.predict(build_feature_table(X_test, feature_set="v1"))
 
 
 def test_fresh_process_matches_in_memory(trained, tmp_path):
