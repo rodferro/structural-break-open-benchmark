@@ -132,3 +132,47 @@ def tests_group(values: np.ndarray, periods: np.ndarray) -> dict:
     out["lr_meanvar_per_n"] = _safe(lr_mv / len(v))
     out["lr_var_per_n"] = _safe(lr_v / len(v))
     return out
+
+
+# ---------------------------------------------------------------------------
+# selfnorm: is the change at the boundary larger than the changes the same
+# series shows between adjacent windows *before* the boundary? Targets false
+# alarms from series that are non-stationary throughout (error analysis:
+# confident false alarms have large before/after distribution differences).
+# ---------------------------------------------------------------------------
+def _contrasts(x: np.ndarray, z: np.ndarray) -> np.ndarray:
+    from scipy.stats import ks_2samp
+
+    sx, sz = x.std() + EPS, z.std() + EPS
+    mx, mz = np.median(np.abs(x - np.median(x))) + EPS, np.median(np.abs(z - np.median(z))) + EPS
+    return np.array([
+        ks_2samp(x, z).statistic,
+        abs(np.log(sz / sx)),
+        abs(z.mean() - x.mean()) / np.sqrt(0.5 * (sx * sx + sz * sz)),
+        abs(np.log(mz / mx)),
+    ])
+
+
+_CONTRASTS = ("ks", "logstd", "meanshift", "logmad")
+
+
+@register("selfnorm")
+def selfnorm_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    a, b = values[periods == 0], values[periods == 1]
+    out: dict = {}
+    w = int(min(len(b), len(a) // 3))
+    if w < 30:
+        return out
+    bnd = _contrasts(a[-w:], b[:w])
+    step = max(w // 2, 1)
+    ref = [_contrasts(a[s : s + w], a[s + w : s + 2 * w]) for s in range(0, len(a) - 2 * w + 1, step)]
+    ref = np.array(ref)
+    mu, sd = ref.mean(axis=0), ref.std(axis=0) + EPS
+    for i, name in enumerate(_CONTRASTS):
+        out[f"{name}_boundary"] = _safe(bnd[i])
+        out[f"{name}_ref_mean"] = _safe(mu[i])
+        out[f"{name}_z"] = _safe((bnd[i] - mu[i]) / sd[i])
+        out[f"{name}_over_refmax"] = _safe(bnd[i] / (ref[:, i].max() + EPS))
+        out[f"{name}_pct"] = _safe((ref[:, i] < bnd[i]).mean())
+    out["n_ref_windows"] = float(len(ref))
+    return out
