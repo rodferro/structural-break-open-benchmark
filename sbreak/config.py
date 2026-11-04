@@ -17,6 +17,8 @@ class Config:
 
     # "v1" = submission #28 features; "v2" = length-independent names (see features.py)
     feature_set: str = "v2"
+    # optional additive groups from sbreak/feature_groups.py (each ablatable alone)
+    feature_groups: tuple[str, ...] = ()
 
     # two-stage LightGBM-importance feature selection
     # Nested CV: dropping the interaction stage helps (submission #28: 80 / 20 / 100)
@@ -65,6 +67,7 @@ class Config:
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["models"] = list(self.models)
+        d["feature_groups"] = list(self.feature_groups)
         return d
 
     @classmethod
@@ -72,8 +75,9 @@ class Config:
         d = dict(d)
         known = {f.name for f in dataclasses.fields(cls)}
         d = {k: v for k, v in d.items() if k in known}
-        if "models" in d:
-            d["models"] = tuple(d["models"])
+        for k in ("models", "feature_groups"):
+            if k in d:
+                d[k] = tuple(d[k])
         return cls(**d)
 
     def replace(self, **kw) -> "Config":

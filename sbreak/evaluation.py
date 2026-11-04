@@ -39,11 +39,16 @@ def _hash(d: dict) -> str:
     return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
+SELECTION_VERSION = 2  # 2: no second importance pass when there are no interactions
+
+
 def selection_key(cfg: Config) -> dict:
-    return {
+    d = {
         k: getattr(cfg, k)
         for k in ("n_splits", "seed", "n_base", "n_interact", "n_final", "select_max_rounds", "lgb_params", "lgb_early_stopping")
     }
+    d["selection_version"] = SELECTION_VERSION
+    return d
 
 
 def model_key(cfg: Config, model: str) -> dict:

@@ -642,7 +642,7 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
     return feats
 
 
-def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_set: str = "v1"):
+def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_set: str = "v1", groups=()):
     with warnings.catch_warnings(), np.errstate(all="ignore"):
         warnings.simplefilter("ignore")
         base_set = "v2" if feature_set == "v3" else feature_set
@@ -651,10 +651,26 @@ def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_se
             from .extra_features import extra_features
 
             feats.update(extra_features(np.asarray(values, dtype=float), np.asarray(periods)))
+        if groups:
+            from .feature_groups import compute_groups
+
+            feats.update(compute_groups(np.asarray(values, dtype=float), np.asarray(periods), groups))
         return _id, feats
 
 
-def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None, feature_set: str = "v1") -> pd.DataFrame:
+def _features_for_one(_id, values, periods, feature_set, groups, base):
+    if base:
+        return _features_for_group(_id, values, periods, feature_set, groups)
+    from .feature_groups import compute_groups
+
+    with warnings.catch_warnings(), np.errstate(all="ignore"):
+        warnings.simplefilter("ignore")
+        return _id, compute_groups(np.asarray(values, dtype=float), np.asarray(periods), groups)
+
+
+def build_feature_table(
+    X: pd.DataFrame, n_jobs: int | None = None, feature_set: str = "v1", groups=(), base: bool = True
+) -> pd.DataFrame:
     """Compute per-series features.
 
     X has a MultiIndex (id, time) and columns ['value', 'period'].
@@ -678,9 +694,9 @@ def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None, feature_set:
 
     if n_jobs is None:
         n_jobs = int(os.environ.get("SBREAK_N_JOBS", "-1"))
-    jobs = (delayed(_features_for_group)(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True))
+    jobs = (delayed(_features_for_one)(ids[s], values[s:e], periods[s:e], feature_set, groups, base) for s, e in zip(starts, ends, strict=True))
     if n_jobs == 1 or len(starts) < 64:
-        out = [_features_for_group(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True)]
+        out = [_features_for_one(ids[s], values[s:e], periods[s:e], feature_set, groups, base) for s, e in zip(starts, ends, strict=True)]
     else:
         out = Parallel(n_jobs=n_jobs, batch_size=32)(jobs)
 
