@@ -1,0 +1,43 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # weekly: catches a dependency that disappears from PyPI or a broken wheel
+    - cron: "0 6 * * 1"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Clean environment from pinned requirements
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          # CPU-only torch wheels (same version pin, no CUDA download)
+          .venv/bin/pip install -r requirements-dev.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip check
+          .venv/bin/pip freeze
+
+      - name: Cache TabPFN checkpoint
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tabpfn
+          key: tabpfn-${{ hashFiles('requirements.txt') }}
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Smoke tests (train tiny models, reload every model in a fresh process, predict)
+        run: .venv/bin/python -m pytest -q
+
+      - name: Local CrunchDAO runner on synthetic data
+        run: .venv/bin/python -m sbreak.runner --synthetic --smoke --determinism-check --model-dir /tmp/resources --prediction-dir /tmp/prediction
