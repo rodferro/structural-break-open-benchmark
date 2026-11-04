@@ -1,0 +1,11 @@
+# requirements.txt as frozen by the CrunchDAO registry for submission #28
+# (note: tabpfn, catboost, torch unpinned -> root cause of the April failure)
+catboost
+crunch-cli
+joblib
+lightgbm==4.6.0
+numpy==2.0.2
+pandas
+scikit-learn==1.6.1
+scipy
+tabpfn

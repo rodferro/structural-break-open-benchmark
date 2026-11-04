@@ -1,11 +1,15 @@
-# frozen from registry
-
-catboost
-crunch-cli
-joblib
-lightgbm==4.6.0
+# Runtime dependencies for the CrunchDAO submission. Every version is pinned:
+# submission #28 failed because an unpinned `tabpfn` moved from 6.4.1 (train,
+# March 2026) to 7.x (infer, April 2026). tabpfn/tabpfn-common-utils/torch
+# match the environment that produced the 0.8089 public-leaderboard score.
 numpy==2.0.2
-pandas
+pandas==2.3.3
+pyarrow==18.1.0
+scipy==1.16.3
 scikit-learn==1.6.1
-scipy
-tabpfn
+joblib==1.5.3
+lightgbm==4.6.0
+catboost==1.2.8
+torch==2.9.0
+tabpfn==6.4.1
+tabpfn-common-utils==0.2.18

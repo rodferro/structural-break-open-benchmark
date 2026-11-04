@@ -1,0 +1,143 @@
+"""Honest (nested) cross-validation.
+
+Outer loop: StratifiedKFold over series. For each outer fold, the *entire*
+training procedure (feature selection, K-fold base models, stacker) is run on
+the outer-train rows only, then scored on the held-out rows. This is the
+estimate that should track the leaderboard.
+
+``leaky_cv`` reproduces how submission #28 was validated (features chosen on
+all rows, base models early-stopped on the fold they are scored on, stacker
+scored in-sample), to quantify the optimism.
+
+Per-fold results are cached under ``runs/`` (gitignored) so long runs can be
+resumed and stacker/ensemble ablations can reuse base-model predictions.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
+
+from .config import Config
+from .features import add_interactions
+from .pipeline import as_series
+from .selection import select_features
+from .stacking import StackedEnsemble
+
+OUTER_SEED = 2024
+
+
+def _hash(d: dict) -> str:
+    return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
+
+def selection_key(cfg: Config) -> dict:
+    return {
+        k: getattr(cfg, k)
+        for k in ("n_splits", "seed", "n_base", "n_interact", "n_final", "select_max_rounds", "lgb_params", "lgb_early_stopping")
+    }
+
+
+def model_key(cfg: Config, model: str) -> dict:
+    d = selection_key(cfg) | {"model": model, "early_stop_on_val_fold": cfg.early_stop_on_val_fold}
+    prefix = {"lgb": "lgb_", "cat": "cat_", "tabpfn": "tabpfn_"}[model]
+    d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix) and k != "tabpfn_device"}
+    return d
+
+
+class NestedCV:
+    def __init__(self, F_raw: pd.DataFrame, y, cfg: Config, run_dir="runs/nested",
+                 outer_splits: int = 5, outer_seed: int = OUTER_SEED, feature_set: str = "v1"):
+        self.F_raw = F_raw
+        self.y = as_series(y).loc[F_raw.index]
+        self.cfg = cfg
+        self.outer = list(
+            StratifiedKFold(outer_splits, shuffle=True, random_state=outer_seed).split(F_raw, self.y)
+        )
+        self.dir = Path(run_dir) / f"{feature_set}_outer{outer_splits}_{outer_seed}"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._check_fingerprint()
+
+    def _check_fingerprint(self) -> None:
+        """Cached files are keyed by config and fold only; make sure they belong to this data."""
+        ids = pd.util.hash_pandas_object(self.y.reset_index(), index=False).to_numpy()
+        fp = {"n_rows": int(len(self.y)), "hash": hashlib.sha1(ids.tobytes()).hexdigest()[:16],
+              "n_features": int(self.F_raw.shape[1])}
+        path = self.dir / "data.json"
+        if path.exists():
+            old = json.loads(path.read_text())
+            if old != fp:
+                raise RuntimeError(f"{self.dir} holds results for different data ({old} != {fp}); use another run_dir")
+        else:
+            path.write_text(json.dumps(fp))
+
+    # -- cached stages -------------------------------------------------------
+    def _selection(self, k: int, trn_idx) -> tuple[list[str], list[str]]:
+        path = self.dir / f"sel_{_hash(selection_key(self.cfg))}_fold{k}.json"
+        if path.exists():
+            d = json.loads(path.read_text())
+            return d["base"], d["final"]
+        t = time.time()
+        base, final = select_features(self.F_raw.iloc[trn_idx], self.y.iloc[trn_idx], self.cfg)
+        path.write_text(json.dumps({"base": base, "final": final, "seconds": time.time() - t}))
+        return base, final
+
+    def _base_preds(self, k: int, trn_idx, val_idx, model: str) -> dict:
+        """OOF (inner) predictions on outer-train and averaged predictions on outer-val."""
+        path = self.dir / f"pred_{model}_{_hash(model_key(self.cfg, model))}_fold{k}.npz"
+        if path.exists():
+            z = np.load(path)
+            return {"oof": z["oof"], "val": z["val"]}
+        base, final = self._selection(k, trn_idx)
+        F = add_interactions(self.F_raw[base], top_features=base, top_k=self.cfg.n_interact)[final]
+        cfg = self.cfg.replace(models=(model,))
+        t = time.time()
+        ens = StackedEnsemble(cfg).fit(F.iloc[trn_idx], self.y.iloc[trn_idx])
+        val = ens.predict_base(F.iloc[val_idx])[model]
+        np.savez(path, oof=ens.oof[model], val=val, seconds=time.time() - t)
+        return {"oof": ens.oof[model], "val": val}
+
+    # -- public API ----------------------------------------------------------
+    def run(self, models: tuple[str, ...] | None = None, verbose: bool = True) -> dict:
+        from .stacking import make_stacker
+
+        models = tuple(models or self.cfg.models)
+        y = self.y.to_numpy()
+        pooled = {m: np.zeros(len(y)) for m in (*models, "stack")}
+        fold_auc = {m: [] for m in (*models, "stack")}
+        for k, (trn_idx, val_idx) in enumerate(self.outer):
+            preds = {m: self._base_preds(k, trn_idx, val_idx, m) for m in models}
+            Z_tr = np.column_stack([preds[m]["oof"] for m in models])
+            Z_va = np.column_stack([preds[m]["val"] for m in models])
+            stack = make_stacker(self.cfg).fit(Z_tr, y[trn_idx]).predict(Z_va)
+            for m in models:
+                pooled[m][val_idx] = preds[m]["val"]
+                fold_auc[m].append(roc_auc_score(y[val_idx], preds[m]["val"]))
+            pooled["stack"][val_idx] = stack
+            fold_auc["stack"].append(roc_auc_score(y[val_idx], stack))
+            if verbose:
+                print(f"outer fold {k}: " + " ".join(f"{m}={fold_auc[m][-1]:.4f}" for m in fold_auc), flush=True)
+        summary = {
+            m: {"mean": float(np.mean(a)), "std": float(np.std(a)), "folds": [float(x) for x in a]}
+            for m, a in fold_auc.items()
+        }
+        return {"models": list(models), "stacker": self.cfg.stacker, "auc": summary, "pooled": pooled}
+
+
+def leaky_cv(F_raw: pd.DataFrame, y, cfg: Config) -> dict:
+    """Validation protocol of submission #28 (optimistic by construction)."""
+    y = as_series(y).loc[F_raw.index]
+    base, final = select_features(F_raw, y, cfg)
+    F = add_interactions(F_raw[base], top_features=base, top_k=cfg.n_interact)[final]
+    ens = StackedEnsemble(cfg).fit(F, y)
+    Z = np.column_stack([ens.oof[m] for m in cfg.models])
+    out = {m: float(roc_auc_score(y, ens.oof[m])) for m in cfg.models}
+    out["stack_in_sample"] = float(roc_auc_score(y, ens.stacker.predict(Z)))
+    return out

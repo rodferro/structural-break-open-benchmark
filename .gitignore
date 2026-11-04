@@ -1,9 +1,29 @@
-.venv/
+# --- competition data: never commit -------------------------------------
 *.parquet
-*.joblib
+data/
+prediction/
+# --- model artifacts: never commit --------------------------------------
 resources/
+resources/*.joblib
+*.joblib
+*.ckpt
+*.cbm
+# --- local experiment outputs (may contain scores / OOF predictions) ----
+.cache/
+runs/
+reports/private/
+# --- environment ---------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.crunchdao/
+.env
+.DS_Store
 catboost_info/
 lightning_logs/
-__pycache__/
-.ipynb_checkpoints/
-.DS_Store
+# original notebook holds a CrunchDAO setup token; scrubbed copy: legacy/submission_28.ipynb
+notebook.ipynb
+dist/
