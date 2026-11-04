@@ -26,7 +26,7 @@ class Config:
     select_max_rounds: int = 1_000_000
 
     # base models included in the stack
-    models: tuple[str, ...] = ("lgb", "tabpfn", "cat")
+    models: tuple[str, ...] = ("lgb", "cat")
 
     # LightGBM
     lgb_params: dict = field(
@@ -48,12 +48,6 @@ class Config:
     cat_l2_leaf_reg: float = 5.0
     cat_early_stopping: int = 500
     cat_task_type: str = "auto"  # "auto" -> GPU when CUDA is available, else CPU
-
-    # TabPFN
-    tabpfn_n_estimators: int = 8
-    tabpfn_device: str = "auto"
-    tabpfn_fit_mode: str = "fit_preprocessors"
-    tabpfn_max_context: int | None = None  # subsample the training context (None = all rows)
 
     # stacker
     stacker: str = "logreg"  # "logreg" | "rank_mean"
@@ -103,7 +97,5 @@ def smoke_config() -> Config:
         lgb_early_stopping=10,
         cat_iterations=50,
         cat_early_stopping=10,
-        tabpfn_n_estimators=1,
-        tabpfn_device="cpu",
         verbose=0,
     )

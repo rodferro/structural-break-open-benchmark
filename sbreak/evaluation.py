@@ -48,8 +48,8 @@ def selection_key(cfg: Config) -> dict:
 
 def model_key(cfg: Config, model: str) -> dict:
     d = selection_key(cfg) | {"model": model, "early_stop_on_val_fold": cfg.early_stop_on_val_fold}
-    prefix = {"lgb": "lgb_", "cat": "cat_", "tabpfn": "tabpfn_"}[model]
-    d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix) and k != "tabpfn_device"}
+    prefix = {"lgb": "lgb_", "cat": "cat_"}[model]
+    d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix)}
     return d
 
 

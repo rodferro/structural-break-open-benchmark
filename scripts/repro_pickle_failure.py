@@ -1,5 +1,8 @@
 """Reproduce the April 2026 out-of-sample failure.
 
+Needs its own environments (TabPFN is no longer a project dependency); see
+legacy/requirements-repro.txt for the exact commands.
+
 Step 1 (old env, tabpfn==6.4.1):  python scripts/repro_pickle_failure.py dump  /path/model.joblib
 Step 2 (new env, tabpfn>=7.0):    python scripts/repro_pickle_failure.py load  /path/model.joblib
 

@@ -28,10 +28,16 @@ turns the notebook into a tested package, and re-evaluates the model honestly.
    pairwise interactions (×, ÷, |×|) among the top 20, and kept the top 100
    after a second pass (`submission28_config()`). The current default keeps
    the top 200 raw features with no interactions (see *Validation*).
-3. **Base models** (`sbreak/models.py`). LightGBM, CatBoost and TabPFN are
-   each trained in 5 stratified folds. Test predictions are the fold average.
+3. **Base models** (`sbreak/models.py`). LightGBM and CatBoost are each
+   trained in 5 stratified folds. Test predictions are the fold average.
+   Submission #28 also stacked TabPFN; it has been dropped (see below).
 4. **Stacking** (`sbreak/stacking.py`). A class-balanced logistic regression
-   is fitted on the three out-of-fold probability columns.
+   is fitted on the out-of-fold probability columns.
+
+**Why TabPFN was dropped.** It is only practical on a GPU (a fold's
+prediction takes many minutes on a laptop CPU, and Apple MPS runs out of
+memory at this context size), it pulled in torch, and in nested CV it added
+only a small gain to the stack. Everything now runs on CPU.
 
 `main.py` is the CrunchDAO entry point (`train` / `infer`). Everything else
 lives in the `sbreak` package.
@@ -55,8 +61,10 @@ attribute that 6.4.1's `__init__` never created. Nothing fails at load time,
 so a "can the models be loaded?" check would not have caught it.
 
 **Reproduction.** `scripts/repro_pickle_failure.py` dumps a model under
-6.4.1 and loads it under another environment. I confirmed that 6.4.1 → 6.4.1
-works and that 6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error above.
+6.4.1 and loads it under another environment. 6.4.1 → 6.4.1 works;
+6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error above. TabPFN is no
+longer a project dependency, so the script has its own pinned environments:
+see `legacy/requirements-repro.txt` for the two-venv recipe.
 
 **Root causes**
 
@@ -70,28 +78,27 @@ works and that 6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error a
 
 **Fixes**
 
-- `requirements.txt` pins every runtime dependency to the versions that
-  produced the leaderboard score (tabpfn 6.4.1, tabpfn-common-utils 0.2.18,
-  torch 2.9.0, lightgbm 4.6.0, catboost 1.2.8, ...).
+- `requirements.txt` pins every runtime dependency (lightgbm 4.6.0,
+  catboost 1.2.8, scikit-learn 1.6.1, numpy 2.0.2, ...).
 - No fitted estimator is pickled. LightGBM is saved in its text format,
-  CatBoost as `.cbm` and the stacker as JSON coefficients. TabPFN is
-  *refitted at inference*: its "fit" is in-context learning (preprocessing
-  plus storing the data), so we save the fold's training matrix and labels
-  (parquet) and the checkpoint file, and call `fit` again in `infer()`.
-  Refitting is deterministic; the test suite checks that predictions from a
-  fresh process match the training process (to 1e-6). Shipping the checkpoint
-  means inference does not need network access to the Hugging Face Hub.
+  CatBoost as `.cbm` and the stacker as JSON coefficients. The test suite
+  checks that predictions from a fresh process match the training process
+  (to 1e-6).
+- While TabPFN was still in the stack, it was *refitted at inference* from its
+  saved training context instead of being unpickled. Artifacts trained under
+  tabpfn 6.4.1 then loaded and predicted under 7.1.1. Dropping TabPFN removed
+  the problem at its source.
 - `resources/manifest.json` records library versions. Version drift at
   inference raises a warning naming the package instead of an obscure
-  crash. The 6.4.1-trained artifacts load and predict under tabpfn 7.1.1.
+  crash.
 - CI (`.github/workflows/smoke.yml`) builds a clean environment from
   `requirements.txt` on Python 3.11 (the platform's version) and 3.12, trains
   tiny models on synthetic data, reloads every saved model in a fresh
   interpreter and predicts.
 - A weekly **drift canary** job reproduces the conditions of the failure: it
-  trains under the pinned versions, upgrades tabpfn, torch, LightGBM and
-  CatBoost to their latest releases, then runs inference on the same
-  artifacts. It runs on a schedule (and on demand), not on pull requests, so an
+  trains under the pinned versions, upgrades the shipped libraries (LightGBM,
+  CatBoost, scikit-learn, SciPy, NumPy, pandas, pyarrow) to their latest
+  releases, then runs inference on the same artifacts. It runs on a schedule (and on demand), not on pull requests, so an
   upstream release cannot block unrelated work.
 
 **Two smaller latent bugs found along the way**
@@ -104,10 +111,6 @@ works and that 6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error a
 - `class_weight="balanced"` was passed to `lgb.train`, which ignores
   it (it is a scikit-learn-API parameter). It has been dropped. Behaviour is
   unchanged.
-
-**macOS note.** If `lightgbm` is imported before `torch`, two OpenMP runtimes
-are loaded and TabPFN deadlocks on its first multi-threaded op.
-`sbreak/__init__.py` imports torch first.
 
 ## Validation
 
@@ -147,19 +150,6 @@ Findings (qualitative; per-fold numbers stay local under `runs/`):
   the selection picks, for the worse) nor a larger final feature set
   helped.
 
-Local TabPFN runs on a laptop CPU used a 3,000-row context and 4
-estimators. `scripts/kaggle_tabpfn.py` runs the real configuration on a GPU:
-
-```bash
-.venv/bin/python -m scripts.make_kaggle_bundle   # dist/kaggle_bundle.zip: code + selected feature names
-# on Kaggle (GPU, internet on): attach the bundle as a dataset plus the competition data, then
-#   !pip install -q -r /kaggle/input/<bundle>/requirements.txt
-#   !cd /kaggle/input/<bundle> && python -m scripts.kaggle_tabpfn --data-dir /kaggle/input/<data> --out /kaggle/working/runs
-# download runs.zip, unzip it into this repo, then:
-.venv/bin/python -m scripts.evaluate --models lgb cat tabpfn          # uses the GPU TabPFN predictions
-.venv/bin/python -m scripts.evaluate --preset submission28 --models lgb cat tabpfn
-```
-
 ### Sealed holdout
 
 `y_test.reduced.parquet` holds labels for the reduced test set. It is used as a
@@ -189,9 +179,8 @@ python3.12 -m venv .venv        # 3.11 also works (the CrunchDAO runner used 3.1
 
 `main.py`, `sbreak/` and `requirements.txt` are what was submitted to
 CrunchDAO; the local runner reproduces the platform's train/infer cycle.
-`train()` writes everything into `resources/`. That directory contains data
-derived from the competition data (TabPFN's training context is stored as
-parquet), so it is gitignored and should never be shared.
+`train()` writes everything into `resources/`. Trained artifacts are
+gitignored and should never be shared.
 
 ## Layout
 
@@ -200,7 +189,7 @@ main.py                    CrunchDAO entry point (train / infer)
 sbreak/features.py         per-series features (v1 = submission #28, v2, v3)
 sbreak/extra_features.py   additional two-sample / dependence features (v3)
 sbreak/selection.py        two-stage LightGBM-importance selection
-sbreak/models.py           LightGBM / CatBoost / TabPFN with pickle-free persistence
+sbreak/models.py           LightGBM / CatBoost with pickle-free persistence
 sbreak/stacking.py         K-fold base models + stacker
 sbreak/pipeline.py         train / infer / manifest
 sbreak/evaluation.py       nested CV and the original (leaky) protocol

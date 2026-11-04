@@ -2,7 +2,6 @@
 
     python -m scripts.evaluate --models lgb cat                        # current default config
     python -m scripts.evaluate --preset submission28 --models lgb cat  # submission #28
-    python -m scripts.evaluate --models lgb cat tabpfn --set tabpfn_max_context=3000
     python -m scripts.evaluate --preset submission28 --leaky           # #28's own (leaky) protocol
 """
 
@@ -13,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-import sbreak  # noqa: F401  (import order: torch before lightgbm)
+import sbreak  # noqa: F401
 from sbreak.config import Config, submission28_config
 from sbreak.evaluation import NestedCV, leaky_cv
 
@@ -34,7 +33,7 @@ def main() -> None:
     ap.add_argument("--preset", choices=["default", "submission28"], default="default")
     ap.add_argument("--features", default=None, help="feature cache (default: .cache/features_X_train[.<set>].parquet)")
     ap.add_argument("--labels", default="y_train.parquet")
-    ap.add_argument("--models", nargs="+", default=["lgb", "tabpfn", "cat"])
+    ap.add_argument("--models", nargs="+", default=["lgb", "cat"])
     ap.add_argument("--set", nargs="*", help="Config overrides key=json_value")
     ap.add_argument("--outer-splits", type=int, default=5)
     ap.add_argument("--leaky", action="store_true")

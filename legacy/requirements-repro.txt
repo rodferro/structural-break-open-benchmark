@@ -1,0 +1,15 @@
+# Environment for scripts/repro_pickle_failure.py (the April 2026 failure).
+#
+#   python3.12 -m venv /tmp/repro-old && /tmp/repro-old/bin/pip install -r legacy/requirements-repro.txt
+#   python3.12 -m venv /tmp/repro-new && /tmp/repro-new/bin/pip install -r legacy/requirements-repro.txt \
+#       && /tmp/repro-new/bin/pip install --upgrade tabpfn==7.1.1 tabpfn-common-utils
+#   /tmp/repro-old/bin/python scripts/repro_pickle_failure.py dump /tmp/m.joblib   # OK
+#   /tmp/repro-new/bin/python scripts/repro_pickle_failure.py load /tmp/m.joblib   # AttributeError
+#
+# These are the March 2026 training versions (submission #28).
+numpy==2.0.2
+scikit-learn==1.6.1
+joblib==1.5.3
+torch==2.9.0
+tabpfn==6.4.1
+tabpfn-common-utils==0.2.18

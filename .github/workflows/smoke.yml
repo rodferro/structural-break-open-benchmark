@@ -28,16 +28,9 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          # CPU-only torch wheels (same version pin, no CUDA download)
-          .venv/bin/pip install -r requirements-dev.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip install -r requirements-dev.txt
           .venv/bin/pip check
           .venv/bin/pip freeze
-
-      - name: Cache TabPFN checkpoint
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/tabpfn
-          key: tabpfn-${{ hashFiles('requirements.txt') }}
 
       - name: Lint
         run: .venv/bin/ruff check .
@@ -67,16 +60,16 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip install -r requirements.txt
 
       - name: Train under the pinned versions
         run: .venv/bin/python -m sbreak.runner --synthetic --smoke --model-dir /tmp/resources --prediction-dir /tmp/pred-pinned
 
       - name: Upgrade model libraries to their latest releases
         run: |
-          .venv/bin/pip install --upgrade tabpfn tabpfn-common-utils torch lightgbm catboost \
-            --extra-index-url https://download.pytorch.org/whl/cpu
-          .venv/bin/pip freeze | grep -iE '^(tabpfn|tabpfn-common-utils|torch|lightgbm|catboost)=='
+          # the libraries whose saved artifacts we load (models) or whose output feeds them (features)
+          .venv/bin/pip install --upgrade lightgbm catboost scikit-learn scipy numpy pandas pyarrow
+          .venv/bin/pip freeze | grep -iE '^(lightgbm|catboost|scikit-learn|scipy|numpy|pandas|pyarrow)=='
 
       - name: Infer with the pinned-era artifacts
         run: .venv/bin/python -m sbreak.runner --synthetic --smoke --skip-train --model-dir /tmp/resources --prediction-dir /tmp/pred-latest

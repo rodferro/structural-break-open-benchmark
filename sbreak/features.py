@@ -711,5 +711,5 @@ def add_interactions(
 
 
 def prepare_for_tabular_model(F: pd.DataFrame) -> pd.DataFrame:
-    """Replace inf with NaN and fill NaN with 0 (TabPFN / CatBoost input)."""
+    """Replace inf with NaN and fill NaN with 0 (CatBoost input)."""
     return F.replace([np.inf, -np.inf], np.nan).fillna(0.0)

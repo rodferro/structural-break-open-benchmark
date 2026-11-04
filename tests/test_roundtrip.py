@@ -42,7 +42,8 @@ def test_manifest_lists_existing_files(trained):
         assert len(manifest["files"][model]) >= p.cfg.n_splits
         for f in manifest["files"][model]:
             assert (model_dir / f).exists(), f
-    assert manifest["versions"]["tabpfn"] != "missing"
+    assert manifest["versions"]["lightgbm"] != "missing"
+    assert manifest["versions"]["catboost"] != "missing"
 
 
 def test_every_model_loads_and_predicts(trained):

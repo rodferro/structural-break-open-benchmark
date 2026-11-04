@@ -4,24 +4,20 @@ No fitted estimator is ever pickled:
 
 * LightGBM -> native text model (``Booster.save_model``)
 * CatBoost -> native ``.cbm`` (``save_model``)
-* TabPFN   -> its *training context* (features + labels as parquet) and the
-  checkpoint file; the classifier is re-fitted at inference. TabPFN's "fit" is
-  in-context learning (preprocessing + storing the data), so refitting is
-  cheap and deterministic, and it never depends on private attributes of a
-  torch ``nn.Module`` surviving a library upgrade.
+
+(Submission #28 also used TabPFN, pickled with joblib; that is what broke when
+tabpfn was upgraded between training and inference. TabPFN has since been
+dropped: it needs a GPU to be practical and added little to the stack.)
 """
 
 from __future__ import annotations
 
 import json
-import shutil
-import warnings
 from importlib.metadata import version
 from pathlib import Path
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
 
 from .config import Config
 from .features import prepare_for_tabular_model
@@ -31,9 +27,9 @@ TARGET_COL = "__target__"
 
 def _cuda_available() -> bool:
     try:
-        import torch
+        from catboost.utils import get_gpu_device_count
 
-        return bool(torch.cuda.is_available())
+        return get_gpu_device_count() > 0
     except Exception:  # pragma: no cover
         return False
 
@@ -133,114 +129,12 @@ class CatModel:
         return cls(cfg, m)
 
 
-# ---------------------------------------------------------------------------
-# TabPFN (refit-at-inference)
-# ---------------------------------------------------------------------------
-TABPFN_WEIGHTS_DIR = "tabpfn_weights"
-
-
-def _default_tabpfn_checkpoint() -> Path | None:
-    try:
-        from tabpfn.model_loading import resolve_model_path
-
-        paths, *_ = resolve_model_path(None, which="classifier")
-        return paths[0]
-    except Exception:  # pragma: no cover - API differs across versions
-        return None
-
-
-class TabPFNModel:
-    name = "tabpfn"
-
-    def __init__(self, cfg: Config, model_path: str | Path = "auto"):
-        self.cfg = cfg
-        self.model_path = model_path
-        self.X_ctx: pd.DataFrame | None = None
-        self.y_ctx: np.ndarray | None = None
-        self.clf = None
-
-    def _device(self) -> str:
-        d = self.cfg.tabpfn_device
-        if d == "auto":
-            # MPS (Apple) runs out of memory at this context size; prefer CUDA, else CPU.
-            return "cuda" if _cuda_available() else "cpu"
-        return d
-
-    def _build(self):
-        from tabpfn import TabPFNClassifier
-
-        device = self._device()
-        return TabPFNClassifier(
-            n_estimators=self.cfg.tabpfn_n_estimators,
-            device=device,
-            random_state=0,
-            fit_mode=self.cfg.tabpfn_fit_mode,
-            model_path=str(self.model_path),
-        )
-
-    def _subsample(self, X: pd.DataFrame, y) -> tuple[pd.DataFrame, np.ndarray]:
-        y = np.asarray(y)
-        n = self.cfg.tabpfn_max_context
-        if n is None or len(X) <= n:
-            return X, y
-        from sklearn.model_selection import train_test_split
-
-        idx, _ = train_test_split(np.arange(len(X)), train_size=n, stratify=y, random_state=self.cfg.seed)
-        idx = np.sort(idx)
-        return X.iloc[idx], y[idx]
-
-    def fit(self, X_tr, y_tr, X_es=None, y_es=None):
-        X_ctx, y_ctx = self._subsample(prepare_for_tabular_model(X_tr), y_tr)
-        self.X_ctx, self.y_ctx = X_ctx, y_ctx
-        self._refit()
-        return self
-
-    def _refit(self):
-        self.clf = self._build()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self.clf.fit(self.X_ctx, self.y_ctx)
-
-    def predict(self, X) -> np.ndarray:
-        if self.clf is None:
-            self._refit()
-        Xp = prepare_for_tabular_model(X)
-        return self.clf.predict_proba(Xp)[:, 1]
-
-    def save(self, directory: Path, tag: str) -> list[str]:
-        fname = f"tabpfn_{tag}_context.parquet"
-        ctx = self.X_ctx.copy()
-        ctx[TARGET_COL] = self.y_ctx
-        ctx.to_parquet(directory / fname)
-        files = [fname]
-        # Ship the checkpoint so inference needs neither network nor HF Hub.
-        src = Path(self.model_path) if str(self.model_path) != "auto" else _default_tabpfn_checkpoint()
-        if src is not None and src.exists():
-            wdir = directory / TABPFN_WEIGHTS_DIR
-            wdir.mkdir(exist_ok=True)
-            dst = wdir / src.name
-            if not dst.exists():
-                shutil.copy2(src, dst)
-            files.append(f"{TABPFN_WEIGHTS_DIR}/{src.name}")
-        return files
-
-    @classmethod
-    def load(cls, cfg: Config, directory: Path, tag: str) -> "TabPFNModel":
-        wdir = directory / TABPFN_WEIGHTS_DIR
-        ckpts = sorted(wdir.glob("*.ckpt")) if wdir.exists() else []
-        m = cls(cfg, model_path=ckpts[0] if ckpts else "auto")
-        ctx = pd.read_parquet(directory / f"tabpfn_{tag}_context.parquet")
-        m.y_ctx = ctx.pop(TARGET_COL).to_numpy()
-        m.X_ctx = ctx
-        return m  # refit lazily on first predict
-
-
-MODEL_CLASSES = {c.name: c for c in (LGBModel, CatModel, TabPFNModel)}
+MODEL_CLASSES = {c.name: c for c in (LGBModel, CatModel)}
 
 
 def library_versions() -> dict[str, str]:
     out = {}
-    for pkg in ("tabpfn", "tabpfn-common-utils", "torch", "lightgbm", "catboost", "scikit-learn", "numpy", "pandas", "scipy"):
+    for pkg in ("lightgbm", "catboost", "scikit-learn", "numpy", "pandas", "scipy", "pyarrow"):
         try:
             out[pkg] = version(pkg)
         except Exception:
