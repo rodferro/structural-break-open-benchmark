@@ -1,0 +1,11 @@
+# frozen from registry
+
+catboost
+crunch-cli
+joblib
+lightgbm==4.6.0
+numpy==2.0.2
+pandas
+scikit-learn==1.6.1
+scipy
+tabpfn

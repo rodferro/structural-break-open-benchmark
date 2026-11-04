@@ -1,0 +1,9 @@
+.venv/
+*.parquet
+*.joblib
+resources/
+catboost_info/
+lightning_logs/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store

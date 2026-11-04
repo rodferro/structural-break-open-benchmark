@@ -1,0 +1,16 @@
+# extracted from a notebook
+
+## third-party
+catboost
+crunch-cli  # alias of crunch
+joblib
+lightgbm
+numpy==2.0.2
+pandas
+scikit-learn==1.6.1  # alias of sklearn
+scipy
+tabpfn
+
+## standard
+#os
+#typing
