@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -68,11 +69,22 @@ class NestedCV:
     def _check_fingerprint(self) -> None:
         """Cached files are keyed by config and fold only; make sure they belong to this data."""
         ids = pd.util.hash_pandas_object(self.y.reset_index(), index=False).to_numpy()
+        # Hash the feature table too (names and values), so a change in features.py that keeps
+        # the same columns cannot silently reuse selections/predictions computed on old features.
+        cols = hashlib.sha1("\x1f".join(map(str, self.F_raw.columns)).encode()).hexdigest()[:16]
+        vals = pd.util.hash_pandas_object(self.F_raw, index=True).to_numpy()
         fp = {"n_rows": int(len(self.y)), "hash": hashlib.sha1(ids.tobytes()).hexdigest()[:16],
-              "n_features": int(self.F_raw.shape[1])}
+              "n_features": int(self.F_raw.shape[1]), "columns": cols,
+              "features": hashlib.sha1(vals.tobytes()).hexdigest()[:16]}
         path = self.dir / "data.json"
         if path.exists():
             old = json.loads(path.read_text())
+            if "features" not in old and all(old.get(k) == fp[k] for k in ("n_rows", "hash", "n_features")):
+                # cache written before feature hashing existed: adopt it, but say so
+                warnings.warn(f"{self.dir}: cache predates feature hashing; assuming it matches the "
+                              "current feature table", RuntimeWarning, stacklevel=2)
+                path.write_text(json.dumps(fp))
+                old = fp
             if old != fp:
                 raise RuntimeError(f"{self.dir} holds results for different data ({old} != {fp}); use another run_dir")
         else:
