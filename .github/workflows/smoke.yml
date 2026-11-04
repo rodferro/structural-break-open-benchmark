@@ -3,20 +3,26 @@ name: smoke
 on:
   push:
   pull_request:
+  workflow_dispatch:
   schedule:
-    # weekly: catches a dependency that disappears from PyPI or a broken wheel
+    # weekly: runs the pinned smoke tests and the version-drift canary
     - cron: "0 6 * * 1"
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is what the CrunchDAO runner used (see the April 2026 traceback)
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Clean environment from pinned requirements
         run: |
@@ -41,3 +47,36 @@ jobs:
 
       - name: Local CrunchDAO runner on synthetic data
         run: .venv/bin/python -m sbreak.runner --synthetic --smoke --determinism-check --model-dir /tmp/resources --prediction-dir /tmp/prediction
+
+  # The failure that actually happened: models trained under the pinned versions,
+  # inference run after the platform installed newer ones. Train pinned, upgrade
+  # the model libraries to their latest releases, then infer with the same artifacts.
+  # Weekly / manual only, so an upstream release can't block an unrelated PR.
+  drift-canary:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pinned environment
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Train under the pinned versions
+        run: .venv/bin/python -m sbreak.runner --synthetic --smoke --model-dir /tmp/resources --prediction-dir /tmp/pred-pinned
+
+      - name: Upgrade model libraries to their latest releases
+        run: |
+          .venv/bin/pip install --upgrade tabpfn tabpfn-common-utils torch lightgbm catboost \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/pip freeze | grep -iE '^(tabpfn|tabpfn-common-utils|torch|lightgbm|catboost)=='
+
+      - name: Infer with the pinned-era artifacts
+        run: .venv/bin/python -m sbreak.runner --synthetic --smoke --skip-train --model-dir /tmp/resources --prediction-dir /tmp/pred-latest
