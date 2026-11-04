@@ -74,6 +74,7 @@ def main() -> None:
     tag = args.tag or ("leaky" if args.leaky else variant)
     out = Path("runs/results")
     out.mkdir(parents=True, exist_ok=True)
+    r = {}
     if args.leaky:
         res = {"leaky": leaky_cv(F, y, cfg)}
     else:
@@ -82,6 +83,7 @@ def main() -> None:
         pd.DataFrame(r["pooled"], index=F.index).to_parquet(out / f"{tag}.oof.parquet")
     res |= {"preset": args.preset, "config_overrides": parse_overrides(args.set), "feature_set": fs,
             "feature_groups": list(cfg.feature_groups), "n_features": int(F.shape[1]),
+            "compute_seconds": r.get("compute_seconds", {}) if not args.leaky else {},
             "seconds": round(time.time() - t)}
     (out / f"{tag}.json").write_text(json.dumps(res, indent=2))
     print(json.dumps({m: round(v["mean"], 4) for m, v in res.get("auc", {}).items()} or res, indent=1))

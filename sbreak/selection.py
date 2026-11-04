@@ -45,6 +45,11 @@ def lgb_importance(F: pd.DataFrame, y: pd.Series, cfg: Config) -> pd.DataFrame:
 
 def select_features(F_raw: pd.DataFrame, y: pd.Series, cfg: Config) -> tuple[list[str], list[str]]:
     """Return (base_features, final_features)."""
+    if cfg.exclude_features:
+        from .exclusions import resolve
+
+        drop = resolve(cfg.exclude_features)
+        F_raw = F_raw[[c for c in F_raw.columns if c not in drop]]
     imp1 = lgb_importance(F_raw, y, cfg)
     base = imp1["feature"].head(cfg.n_base).tolist()
     if cfg.n_interact < 2:
