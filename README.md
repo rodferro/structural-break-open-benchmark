@@ -6,8 +6,9 @@ for each univariate time series, with a known candidate boundary, predict whethe
 the data-generating process changes at that boundary. Metric: ROC AUC.
 
 Submission #28 scored **0.8089 on the public leaderboard**. Its out-of-sample
-run then failed at inference time. This repository reproduces the failure,
-fixes it, and turns the notebook into a tested package.
+run then failed at inference time, so it never received a final ranking. The
+competition has since closed. This repository reproduces the failure, fixes it,
+turns the notebook into a tested package, and re-evaluates the model honestly.
 
 > Competition data, trained artifacts and non-public scores are deliberately
 > **not** in this repository (see `.gitignore`).
@@ -84,9 +85,14 @@ works and that 6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error a
   inference raises a warning naming the package instead of an obscure
   crash. The 6.4.1-trained artifacts load and predict under tabpfn 7.1.1.
 - CI (`.github/workflows/smoke.yml`) builds a clean environment from
-  `requirements.txt`, trains tiny models on synthetic data, reloads every saved
-  model in a fresh interpreter and predicts. It also runs weekly, so a
-  dependency that disappears or breaks shows up before a deadline does.
+  `requirements.txt` on Python 3.11 (the platform's version) and 3.12, trains
+  tiny models on synthetic data, reloads every saved model in a fresh
+  interpreter and predicts.
+- A weekly **drift canary** job reproduces the conditions of the failure: it
+  trains under the pinned versions, upgrades tabpfn, torch, LightGBM and
+  CatBoost to their latest releases, then runs inference on the same
+  artifacts. It runs on a schedule (and on demand), not on pull requests, so an
+  upstream release cannot block unrelated work.
 
 **Two smaller latent bugs found along the way**
 
@@ -108,7 +114,10 @@ are loaded and TabPFN deadlocks on its first multi-threaded op.
 Submission #28 was validated optimistically, in three ways:
 
 - Features were ranked on *all* training rows, then cross-validated.
-- Each base model was early-stopped on the fold it was scored on.
+- Each base model was early-stopped on the fold it was scored on. (This one
+  is still the default inside the stack, `early_stop_on_val_fold=True`, pending
+  an ablation; it biases the stacker's training data but not the nested-CV
+  outer scores, which are always computed on untouched rows.)
 - The stacker was scored on the data it was fitted on.
 
 `sbreak/evaluation.py` instead runs **nested CV**: an outer 5-fold split
@@ -151,15 +160,23 @@ estimators. `scripts/kaggle_tabpfn.py` runs the real configuration on a GPU:
 .venv/bin/python -m scripts.evaluate --preset submission28 --models lgb cat tabpfn
 ```
 
+### Sealed holdout
+
+`y_test.reduced.parquet` holds labels for the reduced test set. It is used as a
+sealed holdout: feature selection, tuning and ablations use nested CV on the
+training data only, and the holdout is scored **once**, on the frozen final
+configuration, with `--score-holdout`. The runner never reads it otherwise.
+
 ## Usage
 
 ```bash
-/opt/homebrew/bin/python3.12 -m venv .venv
+python3.12 -m venv .venv        # 3.11 also works (the CrunchDAO runner used 3.11)
 .venv/bin/pip install -r requirements-dev.txt
 
 # put X_train.parquet, y_train.parquet, X_test.reduced.parquet, y_test.reduced.parquet in the repo root
-.venv/bin/python -m sbreak.runner                    # CrunchDAO-like train + infer + local score
+.venv/bin/python -m sbreak.runner                    # CrunchDAO-like train + infer (no scoring)
 .venv/bin/python -m sbreak.runner --skip-train --determinism-check
+.venv/bin/python -m sbreak.runner --skip-train --score-holdout   # once, on the final config
 .venv/bin/python -m sbreak.runner --synthetic --smoke  # no data needed
 
 .venv/bin/python -m pytest -q                          # smoke tests
@@ -170,8 +187,11 @@ estimators. `scripts/kaggle_tabpfn.py` runs the real configuration on a GPU:
 .venv/bin/python -m scripts.evaluate --leaky                  # submission #28's own CV protocol
 ```
 
-The submission directory is `main.py`, `sbreak/` and `requirements.txt`.
-`train()` writes everything into `resources/`.
+`main.py`, `sbreak/` and `requirements.txt` are what was submitted to
+CrunchDAO; the local runner reproduces the platform's train/infer cycle.
+`train()` writes everything into `resources/`. That directory contains data
+derived from the competition data (TabPFN's training context is stored as
+parquet), so it is gitignored and should never be shared.
 
 ## Layout
 
