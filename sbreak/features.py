@@ -16,10 +16,13 @@ import scipy.stats
 from joblib import Parallel, delayed
 
 
-def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray) -> dict:
+def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature_set: str = "v1") -> dict:
     """
     values: raw series values for a single id (1D)
     periods: 0/1 indicating before/after boundary aligned with values
+    feature_set: "v1" = submission #28 (multi-context names embed the realised
+        window lengths, giving ~17k mostly-empty columns); "v2" = same values
+        named by nominal window (k, 2x, 3x), so every series has the same columns.
     """
     EPS = 1e-8
 
@@ -199,15 +202,20 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray) -> dict
             s_b = std_(bh)
             med_b = median_(bh)
 
-            feats[f"mc_mean_b{k1}_a{k1}"] = safe(m_b - mean_(a1))
-            feats[f"mc_mean_b{k1}_a{len(a2)}"] = safe(m_b - mean_(a2))
-            feats[f"mc_mean_b{k1}_a{len(a3)}"] = safe(m_b - mean_(a3))
+            if feature_set == "v1":
+                n1, n2, n3 = f"b{k1}_a{k1}", f"b{k1}_a{len(a2)}", f"b{k1}_a{len(a3)}"
+            else:
+                n1, n2, n3 = f"b{k}_a1x", f"b{k}_a2x", f"b{k}_a3x"
 
-            feats[f"mc_std_b{k1}_a{k1}"] = safe(s_b - std_(a1))
-            feats[f"mc_std_b{k1}_a{len(a2)}"] = safe(s_b - std_(a2))
-            feats[f"mc_std_b{k1}_a{len(a3)}"] = safe(s_b - std_(a3))
+            feats[f"mc_mean_{n1}"] = safe(m_b - mean_(a1))
+            feats[f"mc_mean_{n2}"] = safe(m_b - mean_(a2))
+            feats[f"mc_mean_{n3}"] = safe(m_b - mean_(a3))
 
-            feats[f"mc_med_b{k1}_a{k1}"] = safe(med_b - median_(a1))
+            feats[f"mc_std_{n1}"] = safe(s_b - std_(a1))
+            feats[f"mc_std_{n2}"] = safe(s_b - std_(a2))
+            feats[f"mc_std_{n3}"] = safe(s_b - std_(a3))
+
+            feats[f"mc_med_{n1}"] = safe(med_b - median_(a1))
 
     def add_derived_block(vx, name):
         ax = vx[periods == 0]
@@ -634,13 +642,19 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray) -> dict
     return feats
 
 
-def _features_for_group(_id, values: np.ndarray, periods: np.ndarray):
+def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_set: str = "v1"):
     with warnings.catch_warnings(), np.errstate(all="ignore"):
-        warnings.simplefilter("ignore", RuntimeWarning)
-        return _id, extract_features_for_one_id(values, periods)
+        warnings.simplefilter("ignore")
+        base_set = "v2" if feature_set == "v3" else feature_set
+        feats = extract_features_for_one_id(values, periods, base_set)
+        if feature_set == "v3":
+            from .extra_features import extra_features
+
+            feats.update(extra_features(np.asarray(values, dtype=float), np.asarray(periods)))
+        return _id, feats
 
 
-def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None) -> pd.DataFrame:
+def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None, feature_set: str = "v1") -> pd.DataFrame:
     """Compute per-series features.
 
     X has a MultiIndex (id, time) and columns ['value', 'period'].
@@ -664,9 +678,9 @@ def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None) -> pd.DataFr
 
     if n_jobs is None:
         n_jobs = int(os.environ.get("SBREAK_N_JOBS", "-1"))
-    jobs = (delayed(_features_for_group)(ids[s], values[s:e], periods[s:e]) for s, e in zip(starts, ends, strict=True))
+    jobs = (delayed(_features_for_group)(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True))
     if n_jobs == 1 or len(starts) < 64:
-        out = [_features_for_group(ids[s], values[s:e], periods[s:e]) for s, e in zip(starts, ends, strict=True)]
+        out = [_features_for_group(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True)]
     else:
         out = Parallel(n_jobs=n_jobs, batch_size=32)(jobs)
 

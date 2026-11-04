@@ -26,3 +26,4 @@ catboost_info/
 lightning_logs/
 # original notebook holds a CrunchDAO setup token; scrubbed copy: legacy/submission_28.ipynb
 notebook.ipynb
+dist/

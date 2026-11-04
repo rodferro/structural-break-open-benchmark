@@ -14,7 +14,6 @@ No fitted estimator is ever pickled:
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import warnings
 from importlib.metadata import version
@@ -171,8 +170,6 @@ class TabPFNModel:
         from tabpfn import TabPFNClassifier
 
         device = self._device()
-        if device == "cpu":
-            os.environ.setdefault("TABPFN_ALLOW_CPU_LARGE_DATASET", "1")
         return TabPFNClassifier(
             n_estimators=self.cfg.tabpfn_n_estimators,
             device=device,

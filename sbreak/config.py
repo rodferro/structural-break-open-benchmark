@@ -12,6 +12,9 @@ class Config:
     n_splits: int = 5
     seed: int = 99999
 
+    # "v1" = submission #28 features; "v2" = length-independent names (see features.py)
+    feature_set: str = "v1"
+
     # two-stage LightGBM-importance feature selection
     n_base: int = 80  # top-k raw features kept after stage 1
     n_interact: int = 20  # top-k of those used to build pairwise interactions

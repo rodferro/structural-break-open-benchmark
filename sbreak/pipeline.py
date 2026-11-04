@@ -93,7 +93,7 @@ def train(
 ) -> FittedPipeline:
     cfg = cfg or Config()
     if F_raw is None:
-        F_raw = build_feature_table(X_train)
+        F_raw = build_feature_table(X_train, feature_set=cfg.feature_set)
     p = fit_pipeline(F_raw, as_series(y_train), cfg)
     save_pipeline(p, model_directory_path)
     return p
@@ -102,6 +102,6 @@ def train(
 def infer(X_test: pd.DataFrame, model_directory_path: str, F_raw: pd.DataFrame | None = None) -> pd.Series:
     p = load_pipeline(model_directory_path)
     if F_raw is None:
-        F_raw = build_feature_table(X_test)
+        F_raw = build_feature_table(X_test, feature_set=p.cfg.feature_set)
     pred = p.predict(F_raw)
     return pd.Series(pred, index=F_raw.index, name="prediction")

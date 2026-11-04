@@ -13,6 +13,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default=".")
     ap.add_argument("--out", default=".cache")
+    ap.add_argument("--feature-set", default="v1")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(exist_ok=True)
@@ -21,8 +22,9 @@ def main() -> None:
         if not src.exists():
             continue
         t = time.time()
-        F = build_feature_table(pd.read_parquet(src))
-        F.to_parquet(out / f"features_{name}.parquet")
+        F = build_feature_table(pd.read_parquet(src), feature_set=args.feature_set)
+        suffix = "" if args.feature_set == "v1" else f".{args.feature_set}"
+        F.to_parquet(out / f"features_{name}{suffix}.parquet")
         print(f"{name}: {F.shape} in {time.time() - t:.0f}s")
 
 
