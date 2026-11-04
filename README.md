@@ -23,8 +23,10 @@ fixes it, and turns the notebook into a tested package.
    outlier and jump counts, a Chow F-statistic, Welch t, KS, Levene and
    Wasserstein distances.
 2. **Feature selection** (`sbreak/selection.py`). LightGBM gain importance over
-   5 folds keeps the top 80 raw features. Pairwise interactions (×, ÷, |×|)
-   among the top 20 are added, and a second importance pass keeps the top 100.
+   5 folds ranks the raw features. Submission #28 kept the top 80, added
+   pairwise interactions (×, ÷, |×|) among the top 20, and kept the top 100
+   after a second pass (`submission28_config()`). The current default keeps
+   the top 200 raw features with no interactions (see *Validation*).
 3. **Base models** (`sbreak/models.py`). LightGBM, CatBoost and TabPFN are
    each trained in 5 stratified folds. Test predictions are the fold average.
 4. **Stacking** (`sbreak/stacking.py`). A class-balanced logistic regression
@@ -75,8 +77,8 @@ works and that 6.4.1 → 7.0.0 and 6.4.1 → 7.1.1 fail with exactly the error a
   *refitted at inference*: its "fit" is in-context learning (preprocessing
   plus storing the data), so we save the fold's training matrix and labels
   (parquet) and the checkpoint file, and call `fit` again in `infer()`.
-  Refitting is deterministic; the test suite checks bit-identical predictions
-  between the training process and a fresh process. Shipping the checkpoint
+  Refitting is deterministic; the test suite checks that predictions from a
+  fresh process match the training process (to 1e-6). Shipping the checkpoint
   means inference does not need network access to the Hugging Face Hub.
 - `resources/manifest.json` records library versions. Version drift at
   inference raises a warning naming the package instead of an obscure
@@ -103,7 +105,51 @@ are loaded and TabPFN deadlocks on its first multi-threaded op.
 
 ## Validation
 
-<!-- filled in below -->
+Submission #28 was validated optimistically, in three ways:
+
+- Features were ranked on *all* training rows, then cross-validated.
+- Each base model was early-stopped on the fold it was scored on.
+- The stacker was scored on the data it was fitted on.
+
+`sbreak/evaluation.py` instead runs **nested CV**: an outer 5-fold split
+over series, and inside each outer-train set the *whole* procedure
+(both selection stages, 5-fold base models, stacker). Only the outer-held-out
+rows are scored. `leaky_cv()` reproduces the old protocol so the two can be
+compared on the same folds. All ablations share the same outer folds and are
+compared with paired per-fold differences (`scripts/compare.py`).
+
+Findings (qualitative; per-fold numbers stay local under `runs/`):
+
+- The old protocol is clearly optimistic. Nested CV lands noticeably
+  *below* both the old CV estimate and the 0.8089 public-leaderboard score,
+  so that score should not be read as this model's expected out-of-sample AUC.
+- **Dropping the pairwise-interaction stage** (keeping the top 200 raw
+  features instead of 80 raw + interactions → 100) is the one change that
+  helped clearly and consistently across folds, with every feature set
+  tried. It is the new default.
+- Length-independent feature names (`v2`) are neutral for AUC but remove
+  the train/infer skew. They are now the default.
+- Extra two-sample and dependence features (`v3`) are selected but add
+  nothing measurable: they are redundant with the existing set.
+- TabPFN adds a small, very consistent gain to the stack. CatBoost is the
+  strongest single model. The stack is only slightly better than CatBoost
+  alone, and a rank-average stacker matches the logistic one.
+- Neither a stronger-regularised LightGBM (it also changes which features
+  the selection picks, for the worse) nor a larger final feature set
+  helped.
+
+Local TabPFN runs on a laptop CPU used a 3,000-row context and 4
+estimators. `scripts/kaggle_tabpfn.py` runs the real configuration on a GPU:
+
+```bash
+.venv/bin/python -m scripts.make_kaggle_bundle   # dist/kaggle_bundle.zip: code + selected feature names
+# on Kaggle (GPU, internet on): attach the bundle as a dataset plus the competition data, then
+#   !pip install -q -r /kaggle/input/<bundle>/requirements.txt
+#   !cd /kaggle/input/<bundle> && python -m scripts.kaggle_tabpfn --data-dir /kaggle/input/<data> --out /kaggle/working/runs
+# download runs.zip, unzip it into this repo, then:
+.venv/bin/python -m scripts.evaluate --models lgb cat tabpfn          # uses the GPU TabPFN predictions
+.venv/bin/python -m scripts.evaluate --preset submission28 --models lgb cat tabpfn
+```
 
 ## Usage
 

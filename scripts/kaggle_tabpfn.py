@@ -32,14 +32,14 @@ from pathlib import Path
 import pandas as pd
 
 import sbreak  # noqa: F401  (import order: torch before lightgbm)
-from sbreak.config import Config
+from sbreak.config import Config, submission28_config
 from sbreak.evaluation import NestedCV
 from sbreak.features import build_feature_table
 
-# (tag, feature_set, config overrides) - must match the local runs being compared
+# tag -> config preset; must match the local runs being compared
 RUNS = {
-    "v1_baseline": ("v1", {}),
-    "v3_noint": ("v3", {"n_interact": 0, "n_base": 200, "n_final": 200}),
+    "v1_baseline": "submission28",  # submission #28
+    "v2_noint": "default",  # current default (v2 features, no interactions)
 }
 
 
@@ -74,13 +74,14 @@ def main() -> None:
 
     features: dict[str, pd.DataFrame] = {}
     for tag in args.runs:
-        fs, overrides = RUNS[tag]
+        base = submission28_config() if RUNS[tag] == "submission28" else Config()
+        fs = base.feature_set
         if fs not in features:
             t = time.time()
             features[fs] = build_feature_table(X, feature_set=fs)
             print(f"features {fs}: {features[fs].shape} in {time.time() - t:.0f}s", flush=True)
-        cfg = Config(models=("tabpfn",), verbose=0, tabpfn_device=args.device,
-                     tabpfn_n_estimators=args.n_estimators).replace(**overrides)
+        cfg = base.replace(models=("tabpfn",), verbose=0, tabpfn_device=args.device,
+                           tabpfn_n_estimators=args.n_estimators)
         cv = NestedCV(features[fs], y, cfg, run_dir=out / "nested", feature_set=fs)
         t = time.time()
         res = cv.run(models=("tabpfn",))

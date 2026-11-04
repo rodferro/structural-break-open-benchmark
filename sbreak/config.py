@@ -1,4 +1,7 @@
-"""Pipeline configuration. Defaults reproduce submission #28."""
+"""Pipeline configuration.
+
+``Config()`` is the current default; ``submission28_config()`` reproduces submission #28.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +16,13 @@ class Config:
     seed: int = 99999
 
     # "v1" = submission #28 features; "v2" = length-independent names (see features.py)
-    feature_set: str = "v1"
+    feature_set: str = "v2"
 
     # two-stage LightGBM-importance feature selection
-    n_base: int = 80  # top-k raw features kept after stage 1
-    n_interact: int = 20  # top-k of those used to build pairwise interactions
-    n_final: int = 100  # top-k features kept after stage 2
+    # Nested CV: dropping the interaction stage helps (submission #28: 80 / 20 / 100)
+    n_base: int = 200  # top-k raw features kept after stage 1
+    n_interact: int = 0  # top-k of those used to build pairwise interactions (0 = none)
+    n_final: int = 200  # top-k features kept after stage 2
     select_max_rounds: int = 1_000_000
 
     # base models included in the stack
@@ -76,6 +80,11 @@ class Config:
 
     def replace(self, **kw) -> "Config":
         return dataclasses.replace(self, **kw)
+
+
+def submission28_config() -> Config:
+    """The configuration behind submission #28 (public LB 0.8089)."""
+    return Config(feature_set="v1", n_base=80, n_interact=20, n_final=100)
 
 
 def smoke_config() -> Config:

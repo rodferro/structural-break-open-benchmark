@@ -16,7 +16,11 @@ from sbreak.pipeline import train as _train  # noqa: E402
 
 
 def _config() -> Config:
-    return smoke_config() if os.environ.get("SBREAK_CONFIG") == "smoke" else Config()
+    cfg = smoke_config() if os.environ.get("SBREAK_CONFIG") == "smoke" else Config()
+    # e.g. SBREAK_MODELS=lgb,cat for a CPU-only local end-to-end check
+    if os.environ.get("SBREAK_MODELS"):
+        cfg = cfg.replace(models=tuple(os.environ["SBREAK_MODELS"].split(",")))
+    return cfg
 
 
 def train(X_train: pd.DataFrame, y_train: pd.Series, model_directory_path: str) -> None:
