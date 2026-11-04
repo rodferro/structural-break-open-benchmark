@@ -6,14 +6,17 @@ Mimics what the platform does with a submission:
 2. call ``train(X_train, y_train, model_directory_path)`` (unless --skip-train),
 3. in a *fresh* process-like state, call ``infer(X_test, model_directory_path)``,
 4. check the output (one finite score per test id), optionally twice for
-   determinism, write ``prediction/prediction.parquet`` and score it if
-   labels are available.
+   determinism, and write ``prediction/prediction.parquet``.
+
+``y_test.reduced.parquet`` is a sealed holdout: it is only read with
+``--score-holdout``, which should be used once, on the frozen final config.
 
 Usage::
 
     python -m sbreak.runner                      # full train + infer on ./*.parquet
     python -m sbreak.runner --skip-train         # infer only, reuse resources/
     python -m sbreak.runner --synthetic --smoke  # no competition data needed
+    python -m sbreak.runner --skip-train --score-holdout  # once, final config only
 """
 
 from __future__ import annotations
@@ -64,6 +67,11 @@ def main(argv=None) -> int:
     ap.add_argument("--determinism-check", action="store_true")
     ap.add_argument("--synthetic", action="store_true", help="use generated data instead of parquet files")
     ap.add_argument("--smoke", action="store_true", help="tiny model config (sets SBREAK_CONFIG=smoke)")
+    ap.add_argument(
+        "--score-holdout",
+        action="store_true",
+        help="score against y_test.reduced.parquet (sealed holdout: use once, on the final config)",
+    )
     args = ap.parse_args(argv)
 
     import os
@@ -75,14 +83,16 @@ def main(argv=None) -> int:
         from .synthetic import make_dataset
 
         X_train, y_train = make_dataset(160, seed=1)
-        X_test, y_test = make_dataset(40, seed=2)
+        X_test, y_synth = make_dataset(40, seed=2)
+        y_test = y_synth if args.score_holdout else None
     else:
         d = Path(args.data_dir)
         X_train = pd.read_parquet(d / "X_train.parquet")
         y_train = pd.read_parquet(d / "y_train.parquet")["structural_breakpoint"]
         X_test = pd.read_parquet(d / "X_test.reduced.parquet")
-        yp = d / "y_test.reduced.parquet"
-        y_test = pd.read_parquet(yp)["structural_breakpoint"] if yp.exists() else None
+        y_test = None
+        if args.score_holdout:
+            y_test = pd.read_parquet(d / "y_test.reduced.parquet")["structural_breakpoint"]
 
     sub = load_submission(Path(args.main).resolve())
     model_dir = Path(args.model_dir)
@@ -112,7 +122,7 @@ def main(argv=None) -> int:
         from sklearn.metrics import roc_auc_score
 
         auc = roc_auc_score(y_test.astype(int).loc[pred.index], pred)
-        print(f"[runner] local ROC AUC on {len(pred)} test ids: {auc:.4f}")
+        print(f"[runner] HOLDOUT ROC AUC on {len(pred)} test ids: {auc:.4f}")
     return 0
 
 
