@@ -45,8 +45,17 @@ def lgb_importance(F: pd.DataFrame, y: pd.Series, cfg: Config) -> pd.DataFrame:
 
 def select_features(F_raw: pd.DataFrame, y: pd.Series, cfg: Config) -> tuple[list[str], list[str]]:
     """Return (base_features, final_features)."""
+    if cfg.exclude_features:
+        from .exclusions import resolve
+
+        drop = resolve(cfg.exclude_features)
+        F_raw = F_raw[[c for c in F_raw.columns if c not in drop]]
     imp1 = lgb_importance(F_raw, y, cfg)
     base = imp1["feature"].head(cfg.n_base).tolist()
+    if cfg.n_interact < 2:
+        # no interactions: a second importance pass would only re-rank the same
+        # columns, so keep the stage-1 order (saves ~half the selection time)
+        return base, base[: cfg.n_final]
     F_int = add_interactions(F_raw[base], top_features=base, top_k=cfg.n_interact)
     imp2 = lgb_importance(F_int, y, cfg)
     final = imp2["feature"].head(cfg.n_final).tolist()

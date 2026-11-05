@@ -49,3 +49,19 @@ def test_old_cache_without_feature_hash_is_adopted(tmp_path):
     with pytest.warns(RuntimeWarning, match="predates feature hashing"):
         NestedCV(F, y, smoke_config(), run_dir=tmp_path, outer_splits=2)
     assert json.loads(path.read_text()) == fp
+
+
+def test_truncated_cache_entry_is_recomputed(tmp_path):
+    F, y = _data(n=80)
+    cfg = smoke_config().replace(models=("lgb",), n_base=3, n_final=3)
+    cv = NestedCV(F, y, cfg, run_dir=tmp_path, outer_splits=2)
+    first = cv.run(verbose=False)
+    pred = sorted(cv.dir.glob("pred_lgb_*_fold0.npz"))[0]
+    pred.write_bytes(pred.read_bytes()[:20])  # simulate a run killed mid-write
+    with pytest.warns(RuntimeWarning, match="unreadable cache entry"):
+        again = NestedCV(F, y, cfg, run_dir=tmp_path, outer_splits=2).run(verbose=False)
+    assert again["auc"]["stack"]["folds"] == first["auc"]["stack"]["folds"]
+    assert not list(cv.dir.glob("*.tmp*"))
+    cs = first["compute_seconds"]
+    assert set(cs) == {"selection", "lgb", "total"} and min(cs.values()) >= 0
+    assert abs(cs["total"] - cs["selection"] - cs["lgb"]) < 0.01

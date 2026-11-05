@@ -98,10 +98,7 @@ class StackedEnsemble:
             for name in cfg.models:
                 t = time.time()
                 model = MODEL_CLASSES[name](cfg)
-                if name == "tabpfn":
-                    model.fit(X_tr, y_tr)  # no early stopping; uses the full fold
-                else:
-                    model.fit(X_fit, y_fit, X_es, y_es)
+                model.fit(X_fit, y_fit, X_es, y_es)
                 self.oof[name][val_idx] = model.predict(X_va)
                 self.fold_models[name].append(model)
                 self.timings[name] += time.time() - t

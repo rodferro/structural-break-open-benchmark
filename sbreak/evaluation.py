@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import warnings
 from pathlib import Path
@@ -39,17 +40,24 @@ def _hash(d: dict) -> str:
     return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:10]
 
 
+SELECTION_VERSION = 2  # 2: no second importance pass when there are no interactions
+
+
 def selection_key(cfg: Config) -> dict:
-    return {
+    d = {
         k: getattr(cfg, k)
         for k in ("n_splits", "seed", "n_base", "n_interact", "n_final", "select_max_rounds", "lgb_params", "lgb_early_stopping")
     }
+    d["selection_version"] = SELECTION_VERSION
+    if cfg.exclude_features:  # only when set, so existing cache keys stay valid
+        d["exclude_features"] = sorted(cfg.exclude_features)
+    return d
 
 
 def model_key(cfg: Config, model: str) -> dict:
     d = selection_key(cfg) | {"model": model, "early_stop_on_val_fold": cfg.early_stop_on_val_fold}
-    prefix = {"lgb": "lgb_", "cat": "cat_", "tabpfn": "tabpfn_"}[model]
-    d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix) and k != "tabpfn_device"}
+    prefix = {"lgb": "lgb_", "cat": "cat_"}[model]
+    d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix)}
     return d
 
 
@@ -91,21 +99,27 @@ class NestedCV:
             path.write_text(json.dumps(fp))
 
     # -- cached stages -------------------------------------------------------
+    def _sel_path(self, k: int) -> Path:
+        return self.dir / f"sel_{_hash(selection_key(self.cfg))}_fold{k}.json"
+
+    def _pred_path(self, k: int, model: str) -> Path:
+        return self.dir / f"pred_{model}_{_hash(model_key(self.cfg, model))}_fold{k}.npz"
+
     def _selection(self, k: int, trn_idx) -> tuple[list[str], list[str]]:
-        path = self.dir / f"sel_{_hash(selection_key(self.cfg))}_fold{k}.json"
-        if path.exists():
-            d = json.loads(path.read_text())
+        path = self._sel_path(k)
+        d = _read_cached(path, lambda p: json.loads(p.read_text()))
+        if d is not None:
             return d["base"], d["final"]
         t = time.time()
         base, final = select_features(self.F_raw.iloc[trn_idx], self.y.iloc[trn_idx], self.cfg)
-        path.write_text(json.dumps({"base": base, "final": final, "seconds": time.time() - t}))
+        _atomic_write(path, lambda p: p.write_text(json.dumps({"base": base, "final": final, "seconds": time.time() - t})))
         return base, final
 
     def _base_preds(self, k: int, trn_idx, val_idx, model: str) -> dict:
         """OOF (inner) predictions on outer-train and averaged predictions on outer-val."""
-        path = self.dir / f"pred_{model}_{_hash(model_key(self.cfg, model))}_fold{k}.npz"
-        if path.exists():
-            z = np.load(path)
+        path = self._pred_path(k, model)
+        z = _read_cached(path, lambda p: dict(np.load(p)))
+        if z is not None:
             return {"oof": z["oof"], "val": z["val"]}
         base, final = self._selection(k, trn_idx)
         F = add_interactions(self.F_raw[base], top_features=base, top_k=self.cfg.n_interact)[final]
@@ -113,7 +127,8 @@ class NestedCV:
         t = time.time()
         ens = StackedEnsemble(cfg).fit(F.iloc[trn_idx], self.y.iloc[trn_idx])
         val = ens.predict_base(F.iloc[val_idx])[model]
-        np.savez(path, oof=ens.oof[model], val=val, seconds=time.time() - t)
+        secs = time.time() - t
+        _atomic_write(path, lambda p: np.savez(p, oof=ens.oof[model], val=val, seconds=secs))
         return {"oof": ens.oof[model], "val": val}
 
     # -- public API ----------------------------------------------------------
@@ -140,7 +155,39 @@ class NestedCV:
             m: {"mean": float(np.mean(a)), "std": float(np.std(a)), "folds": [float(x) for x in a]}
             for m, a in fold_auc.items()
         }
-        return {"models": list(models), "stacker": self.cfg.stacker, "auc": summary, "pooled": pooled}
+        return {"models": list(models), "stacker": self.cfg.stacker, "auc": summary, "pooled": pooled,
+                "compute_seconds": self.compute_seconds(models)}
+
+    def compute_seconds(self, models) -> dict:
+        """CPU-side time recorded when each cached stage was computed (not this call's wall time)."""
+        out = {"selection": 0.0, **{m: 0.0 for m in models}}
+        for k in range(len(self.outer)):
+            d = _read_cached(self._sel_path(k), lambda p: json.loads(p.read_text()))
+            out["selection"] += float(d.get("seconds", 0.0)) if d else 0.0
+            for m in models:
+                z = _read_cached(self._pred_path(k, m), lambda p: dict(np.load(p)))
+                out[m] += float(z["seconds"]) if z is not None and "seconds" in z else 0.0
+        out["total"] = sum(out.values())
+        return {k: round(v, 3) for k, v in out.items()}
+
+
+def _atomic_write(path: Path, write) -> None:
+    """Write via a temp file + rename, so an interrupted run never leaves a truncated cache entry."""
+    tmp = path.with_name(path.stem + ".tmp" + path.suffix)
+    write(tmp)
+    os.replace(tmp, path)
+
+
+def _read_cached(path: Path, read):
+    """Load a cache entry; an unreadable one (e.g. from a killed run) is removed and recomputed."""
+    if not path.exists():
+        return None
+    try:
+        return read(path)
+    except Exception as e:  # noqa: BLE001
+        warnings.warn(f"discarding unreadable cache entry {path.name}: {e!r}", RuntimeWarning, stacklevel=2)
+        path.unlink(missing_ok=True)
+        return None
 
 
 def leaky_cv(F_raw: pd.DataFrame, y, cfg: Config) -> dict:

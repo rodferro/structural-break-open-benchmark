@@ -15,6 +15,8 @@ import pandas as pd
 import scipy.stats
 from joblib import Parallel, delayed
 
+LOCAL_KS = (3, 5, 10, 20, 50, 100, 256)  # boundary-local window sizes
+
 
 def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature_set: str = "v1") -> dict:
     """
@@ -172,7 +174,7 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
         feats[f"{prefix}_cohens_d"] = safe(mean_diff / pooled)
 
     def add_local_boundary_features():
-        for k in (3, 5, 10, 20, 50, 100, 256):
+        for k in LOCAL_KS:
             kk = min(k, len(a), len(b))
             a_tail = a[-kk:]
             b_head = b[:kk]
@@ -207,7 +209,11 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
             else:
                 n1, n2, n3 = f"b{k}_a1x", f"b{k}_a2x", f"b{k}_a3x"
 
-            feats[f"mc_mean_{n1}"] = safe(m_b - mean_(a1))
+            # v2+: at windows the boundary-local block already covers (k = 20, 256),
+            # mc_mean/mc_med *_a1x equal local_mean_diff_k / local_median_diff_k exactly
+            dup = feature_set != "v1" and k in LOCAL_KS
+            if not dup:
+                feats[f"mc_mean_{n1}"] = safe(m_b - mean_(a1))
             feats[f"mc_mean_{n2}"] = safe(m_b - mean_(a2))
             feats[f"mc_mean_{n3}"] = safe(m_b - mean_(a3))
 
@@ -215,7 +221,8 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
             feats[f"mc_std_{n2}"] = safe(s_b - std_(a2))
             feats[f"mc_std_{n3}"] = safe(s_b - std_(a3))
 
-            feats[f"mc_med_{n1}"] = safe(med_b - median_(a1))
+            if not dup:
+                feats[f"mc_med_{n1}"] = safe(med_b - median_(a1))
 
     def add_derived_block(vx, name):
         ax = vx[periods == 0]
@@ -246,12 +253,12 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
         lo, hi = np.quantile(x, [lower, upper])
         return safe(np.mean(np.clip(x, lo, hi)))
 
-    def add_outlier_features(feats, x, suffix):
+    def add_outlier_features(feats, x, suffix, z_thresholds=(2.5, 3.0, 4.0)):
         x = np.asarray(x, dtype=float)
         n = len(x)
 
         if n == 0:
-            for thr in (2.5, 3.0, 4.0):
+            for thr in z_thresholds:
                 tag = str(thr).replace(".", "p")
                 feats[f"z_outlier_count_{tag}{suffix}"] = 0.0
                 feats[f"z_outlier_frac_{tag}{suffix}"] = 0.0
@@ -283,7 +290,7 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
         else:
             mz = 0.67448975 * (x - med) / (mad + EPS)
 
-        for thr in (2.5, 3.0, 4.0):
+        for thr in z_thresholds:
             mask = np.abs(z) > thr
             pos_mask = z > thr
             neg_mask = z < -thr
@@ -626,12 +633,19 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
         a_tail = a[-kk:]
         b_head = b[:kk]
 
-        add_outlier_features(feats, a_tail, f"_a_tail_k{k}")
-        add_outlier_features(feats, b_head, f"_b_head_k{k}")
+        z_thr = (2.5, 3.0, 4.0)
+        if feature_set != "v1":
+            # With k points the largest attainable |z| is (k - 1) / sqrt(k) (2.85 for
+            # k = 10), so higher thresholds give constant columns. Decided from the
+            # nominal window size, so every series still gets the same columns.
+            z_thr = tuple(t for t in z_thr if t < (k - 1) / np.sqrt(k))
+        add_outlier_features(feats, a_tail, f"_a_tail_k{k}", z_thr)
+        add_outlier_features(feats, b_head, f"_b_head_k{k}", z_thr)
 
-        feats[f"z_outlier_count_3p0_local_diff_k{k}"] = safe(
-            feats[f"z_outlier_count_3p0_b_head_k{k}"] - feats[f"z_outlier_count_3p0_a_tail_k{k}"]
-        )
+        if 3.0 in z_thr:
+            feats[f"z_outlier_count_3p0_local_diff_k{k}"] = safe(
+                feats[f"z_outlier_count_3p0_b_head_k{k}"] - feats[f"z_outlier_count_3p0_a_tail_k{k}"]
+            )
         feats[f"mad_outlier_count_5p0_local_diff_k{k}"] = safe(
             feats[f"mad_outlier_count_5p0_b_head_k{k}"] - feats[f"mad_outlier_count_5p0_a_tail_k{k}"]
         )
@@ -642,7 +656,7 @@ def extract_features_for_one_id(values: np.ndarray, periods: np.ndarray, feature
     return feats
 
 
-def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_set: str = "v1"):
+def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_set: str = "v1", groups=()):
     with warnings.catch_warnings(), np.errstate(all="ignore"):
         warnings.simplefilter("ignore")
         base_set = "v2" if feature_set == "v3" else feature_set
@@ -651,10 +665,26 @@ def _features_for_group(_id, values: np.ndarray, periods: np.ndarray, feature_se
             from .extra_features import extra_features
 
             feats.update(extra_features(np.asarray(values, dtype=float), np.asarray(periods)))
+        if groups:
+            from .feature_groups import compute_groups
+
+            feats.update(compute_groups(np.asarray(values, dtype=float), np.asarray(periods), groups))
         return _id, feats
 
 
-def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None, feature_set: str = "v1") -> pd.DataFrame:
+def _features_for_one(_id, values, periods, feature_set, groups, base):
+    if base:
+        return _features_for_group(_id, values, periods, feature_set, groups)
+    from .feature_groups import compute_groups
+
+    with warnings.catch_warnings(), np.errstate(all="ignore"):
+        warnings.simplefilter("ignore")
+        return _id, compute_groups(np.asarray(values, dtype=float), np.asarray(periods), groups)
+
+
+def build_feature_table(
+    X: pd.DataFrame, n_jobs: int | None = None, feature_set: str = "v1", groups=(), base: bool = True
+) -> pd.DataFrame:
     """Compute per-series features.
 
     X has a MultiIndex (id, time) and columns ['value', 'period'].
@@ -678,9 +708,9 @@ def build_feature_table(X: pd.DataFrame, n_jobs: int | None = None, feature_set:
 
     if n_jobs is None:
         n_jobs = int(os.environ.get("SBREAK_N_JOBS", "-1"))
-    jobs = (delayed(_features_for_group)(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True))
+    jobs = (delayed(_features_for_one)(ids[s], values[s:e], periods[s:e], feature_set, groups, base) for s, e in zip(starts, ends, strict=True))
     if n_jobs == 1 or len(starts) < 64:
-        out = [_features_for_group(ids[s], values[s:e], periods[s:e], feature_set) for s, e in zip(starts, ends, strict=True)]
+        out = [_features_for_one(ids[s], values[s:e], periods[s:e], feature_set, groups, base) for s, e in zip(starts, ends, strict=True)]
     else:
         out = Parallel(n_jobs=n_jobs, batch_size=32)(jobs)
 
@@ -711,5 +741,5 @@ def add_interactions(
 
 
 def prepare_for_tabular_model(F: pd.DataFrame) -> pd.DataFrame:
-    """Replace inf with NaN and fill NaN with 0 (TabPFN / CatBoost input)."""
+    """Replace inf with NaN and fill NaN with 0 (CatBoost input)."""
     return F.replace([np.inf, -np.inf], np.nan).fillna(0.0)

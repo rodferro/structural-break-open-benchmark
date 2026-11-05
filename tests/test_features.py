@@ -38,3 +38,16 @@ def test_v2_v3_columns_do_not_depend_on_series_length():
     v1_short = build_feature_table(X_short, n_jobs=1, feature_set="v1")
     v1_long = build_feature_table(X_long, n_jobs=1, feature_set="v1")
     assert set(v1_short.columns) != set(v1_long.columns)
+
+
+def test_v2_has_no_impossible_or_duplicate_columns():
+    X, _ = make_dataset(6, seed=8, min_len=1200, max_len=1400)
+    F = build_feature_table(X, n_jobs=1, feature_set="v2")
+    assert not [c for c in F.columns if c.startswith("z_") and ("3p0" in c or "4p0" in c) and c.endswith("_k10")]
+    assert "z_outlier_count_3p0_local_diff_k10" not in F.columns
+    for k in (20, 256):
+        assert f"mc_mean_b{k}_a1x" not in F.columns and f"mc_med_b{k}_a1x" not in F.columns
+        assert f"local_mean_diff_k{k}" in F.columns
+    assert "z_outlier_count_2p5_a_tail_k10" in F.columns  # reachable threshold kept
+    v1 = build_feature_table(X, n_jobs=1, feature_set="v1")
+    assert "z_outlier_count_3p0_a_tail_k10" in v1.columns  # v1 stays as submitted

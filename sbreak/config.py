@@ -17,6 +17,10 @@ class Config:
 
     # "v1" = submission #28 features; "v2" = length-independent names (see features.py)
     feature_set: str = "v2"
+    # optional additive groups from sbreak/feature_groups.py (each ablatable alone)
+    feature_groups: tuple[str, ...] = ()
+    # base columns dropped before selection: names, or presets from sbreak/exclusions.py
+    exclude_features: tuple[str, ...] = ()
 
     # two-stage LightGBM-importance feature selection
     # Nested CV: dropping the interaction stage helps (submission #28: 80 / 20 / 100)
@@ -26,7 +30,7 @@ class Config:
     select_max_rounds: int = 1_000_000
 
     # base models included in the stack
-    models: tuple[str, ...] = ("lgb", "tabpfn", "cat")
+    models: tuple[str, ...] = ("lgb", "cat")
 
     # LightGBM
     lgb_params: dict = field(
@@ -49,21 +53,15 @@ class Config:
     cat_early_stopping: int = 500
     cat_task_type: str = "auto"  # "auto" -> GPU when CUDA is available, else CPU
 
-    # TabPFN
-    tabpfn_n_estimators: int = 8
-    tabpfn_device: str = "auto"
-    tabpfn_fit_mode: str = "fit_preprocessors"
-    tabpfn_max_context: int | None = None  # subsample the training context (None = all rows)
-
     # stacker
     stacker: str = "logreg"  # "logreg" | "rank_mean"
 
     # True (submission #28's behaviour) early-stops LightGBM/CatBoost on the same
     # fold whose OOF predictions then train the stacker, which biases the stacker
     # toward the early-stopped models. Nested-CV outer scores stay honest either way.
-    # False early-stops on an inner split of the fold's training rows instead.
-    # Kept at True until an ablation shows False is no worse:
-    #   python -m scripts.evaluate --models lgb cat --set early_stop_on_val_fold=false
+    # False early-stops on an inner 15% split of the fold's training rows instead.
+    # Ablated in nested CV: False was clearly worse in every outer fold (the
+    # models lose training data), so True stays the default.
     early_stop_on_val_fold: bool = True
 
     verbose: int = 500
@@ -71,6 +69,8 @@ class Config:
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d["models"] = list(self.models)
+        d["feature_groups"] = list(self.feature_groups)
+        d["exclude_features"] = list(self.exclude_features)
         return d
 
     @classmethod
@@ -78,8 +78,9 @@ class Config:
         d = dict(d)
         known = {f.name for f in dataclasses.fields(cls)}
         d = {k: v for k, v in d.items() if k in known}
-        if "models" in d:
-            d["models"] = tuple(d["models"])
+        for k in ("models", "feature_groups", "exclude_features"):
+            if k in d:
+                d[k] = tuple(d[k])
         return cls(**d)
 
     def replace(self, **kw) -> "Config":
@@ -103,7 +104,5 @@ def smoke_config() -> Config:
         lgb_early_stopping=10,
         cat_iterations=50,
         cat_early_stopping=10,
-        tabpfn_n_estimators=1,
-        tabpfn_device="cpu",
         verbose=0,
     )
