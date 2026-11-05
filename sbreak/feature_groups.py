@@ -329,3 +329,72 @@ def dispersion_group(values: np.ndarray, periods: np.ndarray) -> dict:
         out[f"logdisp_w{w}_b_minus_a"] = _safe(dwb - dwa)
         out[f"logdisp_w{w}_b_minus_all"] = _safe(dwb - d_all)
     return out
+
+
+# ---------------------------------------------------------------------------
+# cumsum_dist / compress. Idea credit: the public solution
+# github.com/AndrewFSee/adia-structural-break (distribution distances on the
+# cumulative sum and first differences; zlib compressibility and normalised
+# compression distance between segments). Reimplemented from scratch.
+# ---------------------------------------------------------------------------
+def _dist_block(xa: np.ndarray, xb: np.ndarray, scale: float, prefix: str, out: dict) -> None:
+    from scipy.stats import energy_distance, wasserstein_distance
+
+    if len(xa) < 5 or len(xb) < 5:
+        return
+    w, e = wasserstein_distance(xa, xb), energy_distance(xa, xb)
+    out[f"{prefix}wasserstein"] = _safe(w)
+    out[f"{prefix}energy"] = _safe(e)
+    out[f"{prefix}wasserstein_z"] = _safe(w / (scale + EPS))
+    out[f"{prefix}energy_z"] = _safe(e / np.sqrt(scale + EPS))
+    out[f"{prefix}mean_diff"] = _safe(xb.mean() - xa.mean())
+    out[f"{prefix}std_ratio"] = _safe(xb.std() / (xa.std() + EPS))
+    qa, qb = np.percentile(xa, [10, 50, 90]), np.percentile(xb, [10, 50, 90])
+    for q, d in zip((10, 50, 90), qb - qa, strict=True):
+        out[f"{prefix}q{q}_diff"] = _safe(d)
+
+
+@register("cumsum_dist")
+def cumsum_dist_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    k0 = int((periods == 0).sum())
+    c = np.cumsum(values)  # raw, not de-meaned: keeps the drift
+    _dist_block(c[:k0], c[k0:], c.std(), "cumsum_", out)
+    d = np.diff(values)
+    _dist_block(d[: k0 - 1], d[k0 - 1 :], d.std(), "diff_", out)
+    return out
+
+
+def _zlib_ratio(x: np.ndarray) -> float:
+    import zlib
+
+    raw = np.ascontiguousarray(x, dtype=np.float32).tobytes()
+    return len(zlib.compress(raw, 9)) / max(len(raw), 1)
+
+
+def _ncd(xa: np.ndarray, xb: np.ndarray) -> float:
+    import zlib
+
+    ba, bb = np.ascontiguousarray(xa, np.float32).tobytes(), np.ascontiguousarray(xb, np.float32).tobytes()
+    ca, cb, cab = len(zlib.compress(ba, 9)), len(zlib.compress(bb, 9)), len(zlib.compress(ba + bb, 9))
+    return (cab - min(ca, cb)) / max(ca, cb, 1)
+
+
+@register("compress")
+def compress_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    a, b = values[periods == 0], values[periods == 1]
+    out: dict = {}
+    if len(a) < 20 or len(b) < 20:
+        return out
+    za, zb = _zlib_ratio(a), _zlib_ratio(b)
+    out["zlib_all"] = _zlib_ratio(values)
+    out["zlib_a"], out["zlib_b"] = za, zb
+    out["zlib_b_minus_a"] = zb - za
+    h = len(a) // 2
+    out["zlib_a_halves_absdiff"] = abs(_zlib_ratio(a[:h]) - _zlib_ratio(a[h:]))
+    out["ncd_ab"] = _ncd(a, b)
+    for w in (50, 100, 250):
+        wa, wb = a[-w:], b[:w]
+        out[f"ncd_w{w}"] = _ncd(wa, wb)
+        out[f"zlib_w{w}_b_minus_a"] = _zlib_ratio(wb) - _zlib_ratio(wa)
+    return out
