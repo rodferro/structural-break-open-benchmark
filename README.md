@@ -162,9 +162,11 @@ compared to the baseline by paired per-fold differences.
 seed (which changes the inner folds of selection and stacking and CatBoost's
 seed) moves the score by about as much as most of the changes below, and this
 seed luck is shared across outer folds, so "worse in every fold" is not by
-itself evidence. A single-seed comparison needs a clearly larger, consistent
-gain than that before a change is adopted. Averaging the honest predictions of
-two seeds helps only marginally.
+itself evidence. Three seeds of the default bracket the noise; the original
+baseline run turned out to be the luckiest of the three, so single-seed
+comparisons against it were biased against every change, and the results
+below are read against the range of the three seeds. Averaging the honest
+predictions of three seeds helps only marginally, for three times the compute.
 
 **Error analysis** (`scripts/error_analysis.py`, nested-CV out-of-fold
 predictions only):
@@ -198,6 +200,9 @@ CPU budget.
 **Experiments** (each group is its own flag: `Config.feature_groups`,
 `Config.exclude_features`):
 
+- Changes are judged against the spread of three seeds of the unchanged
+  default: inside it means no measurable effect, below its worst seed means
+  worse.
 - `scan` (how special the given boundary is among all split points: CUSUM of
   mean, ranks, variance and absolute deviation, and a Gaussian likelihood
   ratio): worse. The columns rank at the top of the importance list yet lower
