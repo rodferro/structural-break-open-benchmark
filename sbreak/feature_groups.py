@@ -176,3 +176,114 @@ def selfnorm_group(values: np.ndarray, periods: np.ndarray) -> dict:
         out[f"{name}_pct"] = _safe((ref[:, i] < bnd[i]).mean())
     out["n_ref_windows"] = float(len(ref))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Segment-descriptor comparisons. Idea credit: the 7th-place writeup of the
+# original ADIA Lab challenge (after/before ratios of segment features,
+# boundary windows at 10/30/60% of each segment, and the same features on the
+# cumulative sum and absolute value of the series). Descriptor list, window
+# convention and the ratio/difference rule are our own definitions.
+# ---------------------------------------------------------------------------
+_POS = ("std", "mad", "iqr", "meanabs", "diffstd", "dispersion_abs", "gini_abs", "hist_entropy",
+        "perm_entropy", "turning_rate", "spec_entropy", "lowfreq_share", "range", "kurt_shift")
+_SIGNED = ("mean", "median", "skew", "acf1", "acf1_abs", "slope", "zero_cross_rate")
+
+
+def _perm_entropy3(x: np.ndarray) -> float:
+    if len(x) < 4:
+        return 0.0
+    w = np.lib.stride_tricks.sliding_window_view(x, 3)
+    code = np.argsort(w, axis=1) @ np.array([1, 3, 9])
+    p = np.bincount(code, minlength=27).astype(float)
+    p = p[p > 0] / p.sum()
+    return float(-(p * np.log(p)).sum() / np.log(6))
+
+
+def _descriptors(x: np.ndarray, lo: float, hi: float) -> dict:
+    n = len(x)
+    if n < 8:
+        return {}
+    med = np.median(x)
+    sd = x.std()
+    q25, q75 = np.percentile(x, [25, 75])
+    ax = np.abs(x)
+    d = np.diff(x)
+    xc = x - x.mean()
+    den = xc @ xc
+    acf1 = float(xc[:-1] @ xc[1:] / den) if den > EPS else 0.0
+    axc = ax - ax.mean()
+    dena = axc @ axc
+    s_ax = np.sort(ax)
+    gini = float((2 * np.arange(1, n + 1) - n - 1) @ s_ax / (n * s_ax.sum() + EPS))
+    h, _ = np.histogram(x, bins=16, range=(lo, hi) if hi > lo else None)
+    ph = h[h > 0] / max(h.sum(), 1)
+    ps = np.abs(np.fft.rfft(xc))[1:] ** 2
+    pss = ps / (ps.sum() + EPS)
+    t = np.arange(n, dtype=float) - (n - 1) / 2
+    from scipy.stats import kurtosis, skew
+
+    return {
+        "std": sd, "mad": np.median(np.abs(x - med)), "iqr": q75 - q25, "meanabs": ax.mean(),
+        "diffstd": d.std(), "dispersion_abs": ax.var() / (ax.mean() + EPS), "gini_abs": gini,
+        "hist_entropy": float(-(ph * np.log(ph)).sum()), "perm_entropy": _perm_entropy3(x),
+        "turning_rate": float(np.mean(d[:-1] * d[1:] < 0)) if n > 2 else 0.0,
+        "spec_entropy": float(-(pss[pss > 0] * np.log(pss[pss > 0])).sum() / np.log(max(len(pss), 2))),
+        "lowfreq_share": float(pss[: max(1, len(pss) // 10)].sum()), "range": x.max() - x.min(),
+        "kurt_shift": kurtosis(x) + 3.0,
+        "mean": x.mean(), "median": med, "skew": skew(x), "acf1": acf1,
+        "acf1_abs": float(axc[:-1] @ axc[1:] / dena) if dena > EPS else 0.0,
+        "slope": float(t @ x / (t @ t)), "zero_cross_rate": float(np.mean(np.diff(np.sign(x - med)) != 0)),
+    }
+
+
+def _compare(da: dict, db: dict, prefix: str, scale: float, out: dict) -> None:
+    for k in _POS:
+        if k in da and k in db:
+            out[f"{prefix}{k}_ratio"] = _safe(db[k] / (da[k] + EPS))
+    for k in _SIGNED:
+        if k in da and k in db:
+            v = db[k] - da[k]
+            if k in ("mean", "median", "slope"):  # scale-free: in units of the series' spread
+                v = v / (scale + EPS)
+            out[f"{prefix}{k}_diff"] = _safe(v)
+
+
+def _segment_and_windows(x: np.ndarray, periods: np.ndarray, out: dict, prefix: str,
+                         segments: bool = True, windows=(0.1, 0.3, 0.6)) -> None:
+    a, b = x[periods == 0], x[periods == 1]
+    lo, hi = np.percentile(x, [0.5, 99.5])
+    scale = x.std()
+    if segments:
+        _compare(_descriptors(a, lo, hi), _descriptors(b, lo, hi), f"{prefix}seg_", scale, out)
+    for frac in windows:
+        wa, wb = a[-max(8, int(frac * len(a))):], b[: max(8, int(frac * len(b)))]
+        _compare(_descriptors(wa, lo, hi), _descriptors(wb, lo, hi), f"{prefix}w{int(frac * 100)}_", scale, out)
+
+
+@register("seg_ratio")
+def seg_ratio_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(values, periods, out, "raw_", segments=True, windows=())
+    return out
+
+
+@register("win_ratio")
+def win_ratio_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(values, periods, out, "raw_", segments=False)
+    return out
+
+
+@register("xf_cumsum")
+def cumsum_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(np.cumsum(values - values.mean()), periods, out, "cumsum_")
+    return out
+
+
+@register("xf_abs")
+def abs_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(np.abs(values - np.median(values)), periods, out, "abs_")
+    return out
