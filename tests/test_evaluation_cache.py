@@ -62,4 +62,6 @@ def test_truncated_cache_entry_is_recomputed(tmp_path):
         again = NestedCV(F, y, cfg, run_dir=tmp_path, outer_splits=2).run(verbose=False)
     assert again["auc"]["stack"]["folds"] == first["auc"]["stack"]["folds"]
     assert not list(cv.dir.glob("*.tmp*"))
-    assert first["compute_seconds"]["total"] > 0
+    cs = first["compute_seconds"]
+    assert set(cs) == {"selection", "lgb", "total"} and min(cs.values()) >= 0
+    assert abs(cs["total"] - cs["selection"] - cs["lgb"]) < 0.01

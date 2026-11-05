@@ -168,7 +168,7 @@ class NestedCV:
                 z = _read_cached(self._pred_path(k, m), lambda p: dict(np.load(p)))
                 out[m] += float(z["seconds"]) if z is not None and "seconds" in z else 0.0
         out["total"] = sum(out.values())
-        return {k: round(v, 1) for k, v in out.items()}
+        return {k: round(v, 3) for k, v in out.items()}
 
 
 def _atomic_write(path: Path, write) -> None:
