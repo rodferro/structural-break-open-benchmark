@@ -11,7 +11,28 @@ competition has since closed. This repository reproduces the failure, fixes it,
 turns the notebook into a tested package, and re-evaluates the model honestly.
 
 > Competition data, trained artifacts and non-public scores are deliberately
-> **not** in this repository (see `.gitignore`).
+> **not** in this repository (see `.gitignore`). The one exception is the single
+> reduced-test holdout score in *Results*; cross-validation numbers stay local.
+
+## Results
+
+| | ROC AUC |
+|---|---|
+| Public leaderboard, submission #28 (original pipeline with TabPFN, March 2026) | **0.809** |
+| Reduced-test holdout, current default (101 series, scored once on the frozen config) | **0.788** |
+
+*Holdout caveat:* one earlier score on this holdout was seen for the same
+configuration before the holdout was sealed; it was not used for any decision.
+With 101 series the holdout is a noisy check (a standard error of roughly 0.05).
+
+**Nested cross-validation** (training data only) is reported as a range across
+seeds, not as one number, because the inner-seed spread is as large as most
+differences between configurations. Cross-validation numbers are kept out of
+the repository by rule, so qualitatively: every seed of the current default
+lands below the public-leaderboard score and below submission #28's own
+(leaky) validation estimate, the default sits slightly above submission #28's
+pipeline re-run honestly, and no feature change tried on CPU moved the range
+(see *Validation*).
 
 ## Approach
 
@@ -191,7 +212,9 @@ predictions only):
 **Feature review** (`scripts/feature_audit.py`): no leakage (every feature is
 computed per series without labels); 17 constant columns (z-score outlier
 counts at |z| > 3 or 4 inside 10-point windows can never fire, since the
-largest possible |z| with 10 points is 2.85); 4 exact duplicates; whole-segment
+largest possible |z| with 10 points is 2.85) and 4 exact duplicates, both now
+removed from `v2`/`v3` at the source (never selected, so the trained model is
+unchanged; `v1` keeps them as submitted); whole-segment
 counts and energy sums that grow with segment length even without a break;
 `-log10 p` capped at 8 and Levene p-values left raw (saturated for a large
 share of series). Feature extraction is cheap; CatBoost training dominates the

@@ -1,6 +1,8 @@
 """Named lists of base features to exclude before selection (Config.exclude_features).
 
-"@audit" comes from scripts/feature_audit.py on the v2 training table:
+"@audit" comes from scripts/feature_audit.py on the v2 training table as it was
+before the constants and duplicates were removed at the source (they no longer
+exist in v2/v3; they still do in v1, so the preset is kept unchanged):
 - 17 constant columns: z-score outlier counts at |z| > 3 or 4 inside a 10-point
   window can never fire (with n = 10 the largest possible |z| is 9/sqrt(10) = 2.85);
 - 4 exact duplicates (mc_*_b20/b256_a1x == local_*_diff_k20/k256);
