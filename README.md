@@ -117,15 +117,16 @@ see `legacy/requirements-repro.txt` for the two-venv recipe.
 Submission #28 was validated optimistically, in three ways:
 
 - Features were ranked on *all* training rows, then cross-validated.
-- Each base model was early-stopped on the fold it was scored on. (This one
-  is still the default inside the stack, `early_stop_on_val_fold=True`, pending
-  an ablation; it biases the stacker's training data but not the nested-CV
-  outer scores, which are always computed on untouched rows.)
+- Each base model was early-stopped on the fold it was scored on. This one
+  is still the default inside the stack (`early_stop_on_val_fold=True`): it
+  biases the stacker's training data, but not the nested-CV outer scores,
+  which are always computed on untouched rows. The alternative was ablated
+  and is worse (see below).
 - The stacker was scored on the data it was fitted on.
 
 `sbreak/evaluation.py` instead runs **nested CV**: an outer 5-fold split
 over series, and inside each outer-train set the *whole* procedure
-(both selection stages, 5-fold base models, stacker). Only the outer-held-out
+(feature selection, 5-fold base models, stacker). Only the outer-held-out
 rows are scored. `leaky_cv()` reproduces the old protocol so the two can be
 compared on the same folds. All ablations share the same outer folds and are
 compared with paired per-fold differences (`scripts/compare.py`).
@@ -143,12 +144,82 @@ Findings (qualitative; per-fold numbers stay local under `runs/`):
   the train/infer skew. They are now the default.
 - Extra two-sample and dependence features (`v3`) are selected but add
   nothing measurable: they are redundant with the existing set.
-- TabPFN adds a small, very consistent gain to the stack. CatBoost is the
-  strongest single model. The stack is only slightly better than CatBoost
-  alone, and a rank-average stacker matches the logistic one.
+- TabPFN added a small, very consistent gain to the stack, but not enough to
+  justify a GPU dependency; it has been dropped. CatBoost is the strongest
+  single model. The stack is only slightly better than CatBoost alone, and a
+  rank-average stacker matches the logistic one.
 - Neither a stronger-regularised LightGBM (it also changes which features
   the selection picks, for the worse) nor a larger final feature set
   helped.
+
+### CPU feature-engineering campaign
+
+Re-run of the default on CPU (LightGBM + CatBoost), then error analysis and
+targeted feature work. Every experiment uses the same outer folds and is
+compared to the baseline by paired per-fold differences.
+
+**Noise floor.** Re-running the *identical* configuration with a different
+seed (which changes the inner folds of selection and stacking and CatBoost's
+seed) moves the score by about as much as most of the changes below, and this
+seed luck is shared across outer folds, so "worse in every fold" is not by
+itself evidence. A single-seed comparison needs a clearly larger, consistent
+gain than that before a change is adopted. Averaging the honest predictions of
+two seeds helps only marginally.
+
+**Error analysis** (`scripts/error_analysis.py`, nested-CV out-of-fold
+predictions only):
+
+- Segment lengths carry no label information (before/after lengths are
+  distributed identically for breaks and non-breaks). AUC rises with the
+  length of the after-boundary segment: short after-segments are simply harder.
+- The training set is a **mixture of series families** with different scales:
+  the scale distribution is multimodal, the positive rate differs between
+  families, and the model is clearly weakest on one large family. The model
+  already sees scale (raw-scale features are always selected); inside the weak
+  family, the best separators are drift *levels* that the base set already
+  contains.
+- **Missed breaks** look like non-breaks in their marginal distribution (low
+  KS, Wasserstein and Levene statistics); many have no detectable mean or
+  variance change. **False alarms** are non-breaks whose before/after
+  distributions do differ.
+- A residual-signal probe (candidate statistics scored where the model is
+  uncertain) found only weak extra signal: dependence and spectral changes,
+  distribution shape after standardisation, and boundary scan statistics.
+
+**Feature review** (`scripts/feature_audit.py`): no leakage (every feature is
+computed per series without labels); 17 constant columns (z-score outlier
+counts at |z| > 3 or 4 inside 10-point windows can never fire, since the
+largest possible |z| with 10 points is 2.85); 4 exact duplicates; whole-segment
+counts and energy sums that grow with segment length even without a break;
+`-log10 p` capped at 8 and Levene p-values left raw (saturated for a large
+share of series). Feature extraction is cheap; CatBoost training dominates the
+CPU budget.
+
+**Experiments** (each group is its own flag: `Config.feature_groups`,
+`Config.exclude_features`):
+
+- `scan` (how special the given boundary is among all split points: CUSUM of
+  mean, ranks, variance and absolute deviation, and a Gaussian likelihood
+  ratio): worse. The columns rank at the top of the importance list yet lower
+  out-of-sample AUC, including against a matched-width control and in a
+  single model in isolation.
+- `selfnorm` (boundary contrast relative to contrasts between windows inside
+  the before-segment, aimed at the false alarms): worse, and unstable.
+- `tests` (unsaturated, length-normalised two-sample statistics): no
+  measurable change.
+- `@audit` exclusions (constants, duplicates, length-confounded counts):
+  no measurable change; the counts still carry usable signal.
+- Inner-split early stopping (`early_stop_on_val_fold=False`): clearly
+  worse.
+- Top 150 or 225 features instead of 200: no measurable change.
+
+**Conclusion.** None of the changes beat the noise floor, so the default is
+unchanged. The groups that *looked* most informative (top importance ranks)
+hurt the most: on this data, LightGBM gain is a poor guide to whether a new
+feature generalises, which is why every candidate is judged by nested CV
+rather than by importance. The groups and exclusion presets stay in the code,
+off by default, so they can be re-tested (for example averaged over several
+seeds) without new code.
 
 ### Sealed holdout
 
@@ -171,11 +242,23 @@ python3.12 -m venv .venv        # 3.11 also works (the CrunchDAO runner used 3.1
 
 .venv/bin/python -m pytest -q                          # smoke tests
 
-# experiments (outputs under runs/, gitignored)
-.venv/bin/python -m scripts.build_features --feature-set v1   # cache features in .cache/
-.venv/bin/python -m scripts.evaluate --models lgb cat         # nested CV
-.venv/bin/python -m scripts.evaluate --leaky                  # submission #28's own CV protocol
+# experiments (outputs under runs/, gitignored; numbers go in reports/private/)
+.venv/bin/python -m scripts.build_features --feature-set v2           # base table -> .cache/
+.venv/bin/python -m scripts.build_features --groups scan tests selfnorm  # one cache per group
+.venv/bin/python -m scripts.evaluate --tag baseline                   # nested CV, default config
+.venv/bin/python -m scripts.evaluate --groups tests --tag tests       # default + one group
+.venv/bin/python -m scripts.evaluate --set 'exclude_features=["@audit"]' --tag audit_drop
+.venv/bin/python -m scripts.evaluate --set seed=12345 --tag baseline_seed2   # noise floor
+.venv/bin/python -m scripts.compare baseline tests audit_drop         # paired deltas, folds won, compute
+.venv/bin/python -m scripts.seed_bag baseline baseline_seed2          # average of runs
+.venv/bin/python -m scripts.error_analysis --tag baseline             # where the model fails
+.venv/bin/python -m scripts.feature_audit --feature-set v2            # constants, duplicates, length effects
+.venv/bin/python -m scripts.evaluate --preset submission28 --leaky    # submission #28's own CV protocol
 ```
+
+Long runs: start them with `nohup … > runs/logs/<name>.log 2>&1 &` so they
+survive the editor closing. Cache writes are atomic, and an unreadable cache
+entry is recomputed, so an interrupted run can simply be restarted.
 
 `main.py`, `sbreak/` and `requirements.txt` are what was submitted to
 CrunchDAO; the local runner reproduces the platform's train/infer cycle.
@@ -188,13 +271,15 @@ gitignored and should never be shared.
 main.py                    CrunchDAO entry point (train / infer)
 sbreak/features.py         per-series features (v1 = submission #28, v2, v3)
 sbreak/extra_features.py   additional two-sample / dependence features (v3)
-sbreak/selection.py        two-stage LightGBM-importance selection
+sbreak/feature_groups.py   optional, separately ablatable feature groups (scan, tests, selfnorm)
+sbreak/exclusions.py       named lists of base features to drop before selection (@audit)
+sbreak/selection.py        LightGBM-importance selection (optional interaction stage)
 sbreak/models.py           LightGBM / CatBoost with pickle-free persistence
 sbreak/stacking.py         K-fold base models + stacker
 sbreak/pipeline.py         train / infer / manifest
 sbreak/evaluation.py       nested CV and the original (leaky) protocol
 sbreak/runner.py           local CrunchDAO-style runner
-scripts/                   feature cache, evaluation CLI, pickle-failure repro
+scripts/                   feature cache, evaluation, comparison, error analysis, audit, pickle-failure repro
 legacy/                    the original submission #28 (setup token redacted)
 tests/                     smoke tests (synthetic data only)
 ```

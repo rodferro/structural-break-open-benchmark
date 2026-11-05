@@ -59,9 +59,9 @@ class Config:
     # True (submission #28's behaviour) early-stops LightGBM/CatBoost on the same
     # fold whose OOF predictions then train the stacker, which biases the stacker
     # toward the early-stopped models. Nested-CV outer scores stay honest either way.
-    # False early-stops on an inner split of the fold's training rows instead.
-    # Kept at True until an ablation shows False is no worse:
-    #   python -m scripts.evaluate --models lgb cat --set early_stop_on_val_fold=false
+    # False early-stops on an inner 15% split of the fold's training rows instead.
+    # Ablated in nested CV: False was clearly worse in every outer fold (the
+    # models lose training data), so True stays the default.
     early_stop_on_val_fold: bool = True
 
     verbose: int = 500
