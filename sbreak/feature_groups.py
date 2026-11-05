@@ -287,3 +287,45 @@ def abs_group(values: np.ndarray, periods: np.ndarray) -> dict:
     out: dict = {}
     _segment_and_windows(np.abs(values - np.median(values)), periods, out, "abs_")
     return out
+
+
+# ---------------------------------------------------------------------------
+# dispersion: index of dispersion var/|mean| of the whole series, each
+# segment and boundary windows. On this benchmark a large family of series
+# satisfies var = c * |mean| when there is no break, and a break moves the
+# series off that relation; the whole-series value carries most of it. This is
+# a property of how the benchmark was generated, not a general break test.
+# Idea credit: the "magic feature" of the original ADIA Lab challenge, as used
+# by the public solution github.com/AndrewFSee/adia-structural-break and the
+# 7th-place writeup (index_of_dispersion). No thresholds are hard-coded.
+# ---------------------------------------------------------------------------
+def _log_disp(x: np.ndarray) -> float:
+    if len(x) < 3:
+        return 0.0
+    m = abs(float(x.mean()))
+    v = float(x.var())
+    return float(np.log10(v + 1e-300) - np.log10(m + 1e-300))
+
+
+@register("dispersion")
+def dispersion_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    a, b = values[periods == 0], values[periods == 1]
+    out: dict = {}
+    if len(a) < 10 or len(b) < 10:
+        return out
+    d_all, d_a, d_b = _log_disp(values), _log_disp(a), _log_disp(b)
+    out["logdisp_all"] = _safe(d_all)
+    out["logdisp_a"] = _safe(d_a)
+    out["logdisp_b"] = _safe(d_b)
+    out["logdisp_b_minus_a"] = _safe(d_b - d_a)
+    out["logdisp_abs_b_minus_a"] = _safe(abs(d_b - d_a))
+    out["logdisp_all_minus_a"] = _safe(d_all - d_a)  # how far the whole series moved from the before-relation
+    out["log_abs_mean_all"] = _safe(np.log10(abs(values.mean()) + 1e-300))
+    out["log_var_all"] = _safe(np.log10(values.var() + 1e-300))
+    out["mean_sign_all"] = float(np.sign(values.mean()))
+    for w in (50, 100, 250):
+        wa, wb = a[-w:], b[:w]
+        dwa, dwb = _log_disp(wa), _log_disp(wb)
+        out[f"logdisp_w{w}_b_minus_a"] = _safe(dwb - dwa)
+        out[f"logdisp_w{w}_b_minus_all"] = _safe(dwb - d_all)
+    return out

@@ -62,6 +62,9 @@ def main() -> None:
     ap.add_argument("--external-mode", choices=["only", "join"], default="only",
                     help="only: use the external table instead of ours; join: append it (columns prefixed ref__)")
     ap.add_argument("--variant", default=None, help="name of the feature variant (cache directory)")
+    ap.add_argument("--external-groups", default=None, help="json with {'groups': {column: group}} for the external table")
+    ap.add_argument("--drop-external-group", nargs="*", default=[], help="leave these external groups out")
+    ap.add_argument("--keep-external-group", nargs="*", default=[], help="keep only these external groups")
     ap.add_argument("--tag", default=None)
     args = ap.parse_args()
 
@@ -74,6 +77,12 @@ def main() -> None:
     fs = cfg.feature_set
     if args.external and args.external_mode == "only":
         F = pd.read_parquet(args.external)
+        if args.drop_external_group or args.keep_external_group:
+            gmap = json.loads(Path(args.external_groups).read_text())["groups"]
+            keep = [c for c in F.columns
+                    if gmap[c] not in args.drop_external_group
+                    and (not args.keep_external_group or gmap[c] in args.keep_external_group)]
+            F = F[keep]
     else:
         F = load_features(Path(args.cache), fs, cfg.feature_groups)
         if args.external:
