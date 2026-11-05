@@ -17,8 +17,9 @@ class Config:
 
     # "v1" = submission #28 features; "v2" = length-independent names (see features.py)
     feature_set: str = "v2"
-    # optional additive groups from sbreak/feature_groups.py (each ablatable alone)
-    feature_groups: tuple[str, ...] = ()
+    # optional additive groups from sbreak/feature_groups.py (each ablatable alone).
+    # Default = the groups adopted after nested CV with three seeds.
+    feature_groups: tuple[str, ...] = ("dispersion", "cumsum_dist", "compress")
     # base columns dropped before selection: names, or presets from sbreak/exclusions.py
     exclude_features: tuple[str, ...] = ()
 
@@ -110,7 +111,7 @@ class Config:
 
 def submission28_config() -> Config:
     """The configuration behind submission #28 (public LB 0.8089)."""
-    return Config(feature_set="v1", n_base=80, n_interact=20, n_final=100)
+    return Config(feature_set="v1", n_base=80, n_interact=20, n_final=100, feature_groups=())
 
 
 def smoke_config() -> Config:
