@@ -28,6 +28,13 @@ class Config:
     n_interact: int = 0  # top-k of those used to build pairwise interactions (0 = none)
     n_final: int = 200  # top-k features kept after stage 2
     select_max_rounds: int = 1_000_000
+    # "cv_gain": mean gain over n_splits early-stopped LightGBM fits (default)
+    # "single_gain": gain of one fixed-length LightGBM fit on the training rows
+    selection_method: str = "cv_gain"
+    select_single_rounds: int = 100
+    select_single_params: dict = field(
+        default_factory=lambda: {"objective": "binary", "num_leaves": 31, "learning_rate": 0.05, "verbosity": -1}
+    )
 
     # base models included in the stack
     models: tuple[str, ...] = ("lgb", "cat")
@@ -44,6 +51,19 @@ class Config:
     )
     lgb_max_rounds: int = 1_000_000
     lgb_early_stopping: int = 500
+
+    # "lgb5": average of several LightGBM configurations (each early-stopped);
+    # the default list mirrors the 5-model ensemble of the public reference
+    # solution compared in reports/private (hyperparameters only)
+    lgb5_configs: tuple = (
+        {"seed": 42, "num_leaves": 63, "learning_rate": 0.03, "reg_alpha": 0.1, "reg_lambda": 0.1},
+        {"seed": 123, "num_leaves": 127, "learning_rate": 0.03, "reg_alpha": 0.3, "reg_lambda": 0.3},
+        {"seed": 456, "num_leaves": 31, "learning_rate": 0.05, "reg_alpha": 0.0, "reg_lambda": 0.0},
+        {"seed": 789, "num_leaves": 63, "learning_rate": 0.03, "subsample": 0.9, "colsample_bytree": 0.9},
+        {"seed": 999, "num_leaves": 63, "learning_rate": 0.01, "reg_alpha": 0.1, "reg_lambda": 0.1},
+    )
+    lgb5_max_rounds: int = 1000
+    lgb5_early_stopping: int = 50
 
     # CatBoost
     cat_iterations: int = 5000
@@ -71,6 +91,7 @@ class Config:
         d["models"] = list(self.models)
         d["feature_groups"] = list(self.feature_groups)
         d["exclude_features"] = list(self.exclude_features)
+        d["lgb5_configs"] = [dict(c) for c in self.lgb5_configs]
         return d
 
     @classmethod
@@ -78,7 +99,7 @@ class Config:
         d = dict(d)
         known = {f.name for f in dataclasses.fields(cls)}
         d = {k: v for k, v in d.items() if k in known}
-        for k in ("models", "feature_groups", "exclude_features"):
+        for k in ("models", "feature_groups", "exclude_features", "lgb5_configs"):
             if k in d:
                 d[k] = tuple(d[k])
         return cls(**d)

@@ -65,3 +65,27 @@ def test_truncated_cache_entry_is_recomputed(tmp_path):
     cs = first["compute_seconds"]
     assert set(cs) == {"selection", "lgb", "total"} and min(cs.values()) >= 0
     assert abs(cs["total"] - cs["selection"] - cs["lgb"]) < 0.01
+
+
+def test_single_gain_selection_and_lgb5_model(tmp_path):
+    F, y = _data(n=120, p=8)
+    cfg = smoke_config().replace(models=("lgb5",), selection_method="single_gain", select_single_rounds=10,
+                                 n_base=5, n_final=5, lgb5_max_rounds=20, lgb5_early_stopping=5)
+    r = NestedCV(F, y, cfg, run_dir=tmp_path, outer_splits=2).run(verbose=False)
+    assert len(r["auc"]["lgb5"]["folds"]) == 2
+    sel = json.loads(sorted(NestedCV(F, y, cfg, run_dir=tmp_path, outer_splits=2).dir.glob("sel_*_fold0.json"))[0].read_text())
+    assert len(sel["final"]) == 5
+
+
+def test_lgb5_roundtrip(tmp_path):
+    from sbreak.pipeline import infer, train
+    from sbreak.synthetic import make_dataset
+
+    X, yy = make_dataset(120, seed=3)
+    X_test, _ = make_dataset(15, seed=4)
+    cfg = smoke_config().replace(models=("lgb5", "cat"), lgb5_max_rounds=20, lgb5_early_stopping=5)
+    p = train(X, yy, str(tmp_path), cfg=cfg)
+    from sbreak.features import build_feature_table
+
+    expected = p.predict(build_feature_table(X_test, feature_set=cfg.feature_set))
+    np.testing.assert_allclose(infer(X_test, str(tmp_path)).to_numpy(), expected, atol=1e-9)

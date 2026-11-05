@@ -43,6 +43,14 @@ def lgb_importance(F: pd.DataFrame, y: pd.Series, cfg: Config) -> pd.DataFrame:
     return imp.sort_values("gain_mean", ascending=False, kind="stable").reset_index(drop=True)
 
 
+def single_gain_importance(F: pd.DataFrame, y: pd.Series, cfg: Config) -> pd.DataFrame:
+    """Gain of one fixed-length LightGBM fit on the rows given (no early stopping)."""
+    params = {**cfg.select_single_params, "seed": cfg.seed}
+    booster = lgb.train(params, lgb.Dataset(F, label=y), num_boost_round=cfg.select_single_rounds)
+    imp = pd.DataFrame({"feature": F.columns, "gain_mean": booster.feature_importance(importance_type="gain")})
+    return imp.sort_values("gain_mean", ascending=False, kind="stable").reset_index(drop=True)
+
+
 def select_features(F_raw: pd.DataFrame, y: pd.Series, cfg: Config) -> tuple[list[str], list[str]]:
     """Return (base_features, final_features)."""
     if cfg.exclude_features:
@@ -50,7 +58,7 @@ def select_features(F_raw: pd.DataFrame, y: pd.Series, cfg: Config) -> tuple[lis
 
         drop = resolve(cfg.exclude_features)
         F_raw = F_raw[[c for c in F_raw.columns if c not in drop]]
-    imp1 = lgb_importance(F_raw, y, cfg)
+    imp1 = single_gain_importance(F_raw, y, cfg) if cfg.selection_method == "single_gain" else lgb_importance(F_raw, y, cfg)
     base = imp1["feature"].head(cfg.n_base).tolist()
     if cfg.n_interact < 2:
         # no interactions: a second importance pass would only re-rank the same
