@@ -57,6 +57,14 @@ def main() -> None:
     ap.add_argument("--outer-splits", type=int, default=5)
     ap.add_argument("--run-dir", default="runs/cpu", help="cache of per-fold selections/predictions")
     ap.add_argument("--leaky", action="store_true")
+    ap.add_argument("--external", default=None,
+                    help="analysis only: parquet of extra features indexed by id (e.g. a reference solution's matrix)")
+    ap.add_argument("--external-mode", choices=["only", "join"], default="only",
+                    help="only: use the external table instead of ours; join: append it (columns prefixed ref__)")
+    ap.add_argument("--variant", default=None, help="name of the feature variant (cache directory)")
+    ap.add_argument("--external-groups", default=None, help="json with {'groups': {column: group}} for the external table")
+    ap.add_argument("--drop-external-group", nargs="*", default=[], help="leave these external groups out")
+    ap.add_argument("--keep-external-group", nargs="*", default=[], help="keep only these external groups")
     ap.add_argument("--tag", default=None)
     args = ap.parse_args()
 
@@ -67,9 +75,22 @@ def main() -> None:
     if args.groups is not None:
         cfg = cfg.replace(feature_groups=tuple(args.groups))
     fs = cfg.feature_set
-    F = load_features(Path(args.cache), fs, cfg.feature_groups)
+    if args.external and args.external_mode == "only":
+        F = pd.read_parquet(args.external)
+        if args.drop_external_group or args.keep_external_group:
+            gmap = json.loads(Path(args.external_groups).read_text())["groups"]
+            keep = [c for c in F.columns
+                    if gmap[c] not in args.drop_external_group
+                    and (not args.keep_external_group or gmap[c] in args.keep_external_group)]
+            F = F[keep]
+    else:
+        F = load_features(Path(args.cache), fs, cfg.feature_groups)
+        if args.external:
+            E = pd.read_parquet(args.external).add_prefix("ref__")
+            assert E.index.equals(F.index), "external table must have the same ids in the same order"
+            F = F.join(E)
     y = pd.read_parquet(args.labels)["structural_breakpoint"]
-    variant = "+".join([fs, *cfg.feature_groups])
+    variant = args.variant or "+".join([fs, *cfg.feature_groups])
     t = time.time()
     tag = args.tag or ("leaky" if args.leaky else variant)
     out = Path("runs/results")

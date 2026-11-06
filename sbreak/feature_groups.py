@@ -176,3 +176,225 @@ def selfnorm_group(values: np.ndarray, periods: np.ndarray) -> dict:
         out[f"{name}_pct"] = _safe((ref[:, i] < bnd[i]).mean())
     out["n_ref_windows"] = float(len(ref))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Segment-descriptor comparisons. Idea credit: the 7th-place writeup of the
+# original ADIA Lab challenge (after/before ratios of segment features,
+# boundary windows at 10/30/60% of each segment, and the same features on the
+# cumulative sum and absolute value of the series). Descriptor list, window
+# convention and the ratio/difference rule are our own definitions.
+# ---------------------------------------------------------------------------
+_POS = ("std", "mad", "iqr", "meanabs", "diffstd", "dispersion_abs", "gini_abs", "hist_entropy",
+        "perm_entropy", "turning_rate", "spec_entropy", "lowfreq_share", "range", "kurt_shift")
+_SIGNED = ("mean", "median", "skew", "acf1", "acf1_abs", "slope", "zero_cross_rate")
+
+
+def _perm_entropy3(x: np.ndarray) -> float:
+    if len(x) < 4:
+        return 0.0
+    w = np.lib.stride_tricks.sliding_window_view(x, 3)
+    code = np.argsort(w, axis=1) @ np.array([1, 3, 9])
+    p = np.bincount(code, minlength=27).astype(float)
+    p = p[p > 0] / p.sum()
+    return float(-(p * np.log(p)).sum() / np.log(6))
+
+
+def _descriptors(x: np.ndarray, lo: float, hi: float) -> dict:
+    n = len(x)
+    if n < 8:
+        return {}
+    med = np.median(x)
+    sd = x.std()
+    q25, q75 = np.percentile(x, [25, 75])
+    ax = np.abs(x)
+    d = np.diff(x)
+    xc = x - x.mean()
+    den = xc @ xc
+    acf1 = float(xc[:-1] @ xc[1:] / den) if den > EPS else 0.0
+    axc = ax - ax.mean()
+    dena = axc @ axc
+    s_ax = np.sort(ax)
+    gini = float((2 * np.arange(1, n + 1) - n - 1) @ s_ax / (n * s_ax.sum() + EPS))
+    h, _ = np.histogram(x, bins=16, range=(lo, hi) if hi > lo else None)
+    ph = h[h > 0] / max(h.sum(), 1)
+    ps = np.abs(np.fft.rfft(xc))[1:] ** 2
+    pss = ps / (ps.sum() + EPS)
+    t = np.arange(n, dtype=float) - (n - 1) / 2
+    from scipy.stats import kurtosis, skew
+
+    return {
+        "std": sd, "mad": np.median(np.abs(x - med)), "iqr": q75 - q25, "meanabs": ax.mean(),
+        "diffstd": d.std(), "dispersion_abs": ax.var() / (ax.mean() + EPS), "gini_abs": gini,
+        "hist_entropy": float(-(ph * np.log(ph)).sum()), "perm_entropy": _perm_entropy3(x),
+        "turning_rate": float(np.mean(d[:-1] * d[1:] < 0)) if n > 2 else 0.0,
+        "spec_entropy": float(-(pss[pss > 0] * np.log(pss[pss > 0])).sum() / np.log(max(len(pss), 2))),
+        "lowfreq_share": float(pss[: max(1, len(pss) // 10)].sum()), "range": x.max() - x.min(),
+        "kurt_shift": kurtosis(x) + 3.0,
+        "mean": x.mean(), "median": med, "skew": skew(x), "acf1": acf1,
+        "acf1_abs": float(axc[:-1] @ axc[1:] / dena) if dena > EPS else 0.0,
+        "slope": float(t @ x / (t @ t)), "zero_cross_rate": float(np.mean(np.diff(np.sign(x - med)) != 0)),
+    }
+
+
+def _compare(da: dict, db: dict, prefix: str, scale: float, out: dict) -> None:
+    for k in _POS:
+        if k in da and k in db:
+            out[f"{prefix}{k}_ratio"] = _safe(db[k] / (da[k] + EPS))
+    for k in _SIGNED:
+        if k in da and k in db:
+            v = db[k] - da[k]
+            if k in ("mean", "median", "slope"):  # scale-free: in units of the series' spread
+                v = v / (scale + EPS)
+            out[f"{prefix}{k}_diff"] = _safe(v)
+
+
+def _segment_and_windows(x: np.ndarray, periods: np.ndarray, out: dict, prefix: str,
+                         segments: bool = True, windows=(0.1, 0.3, 0.6)) -> None:
+    a, b = x[periods == 0], x[periods == 1]
+    lo, hi = np.percentile(x, [0.5, 99.5])
+    scale = x.std()
+    if segments:
+        _compare(_descriptors(a, lo, hi), _descriptors(b, lo, hi), f"{prefix}seg_", scale, out)
+    for frac in windows:
+        wa, wb = a[-max(8, int(frac * len(a))):], b[: max(8, int(frac * len(b)))]
+        _compare(_descriptors(wa, lo, hi), _descriptors(wb, lo, hi), f"{prefix}w{int(frac * 100)}_", scale, out)
+
+
+@register("seg_ratio")
+def seg_ratio_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(values, periods, out, "raw_", segments=True, windows=())
+    return out
+
+
+@register("win_ratio")
+def win_ratio_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(values, periods, out, "raw_", segments=False)
+    return out
+
+
+@register("xf_cumsum")
+def cumsum_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(np.cumsum(values - values.mean()), periods, out, "cumsum_")
+    return out
+
+
+@register("xf_abs")
+def abs_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    _segment_and_windows(np.abs(values - np.median(values)), periods, out, "abs_")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# dispersion: index of dispersion var/|mean| of the whole series, each
+# segment and boundary windows. On this benchmark a large family of series
+# satisfies var = c * |mean| when there is no break, and a break moves the
+# series off that relation; the whole-series value carries most of it. This is
+# a property of how the benchmark was generated, not a general break test.
+# Idea credit: the "magic feature" of the original ADIA Lab challenge, as used
+# by the public solution github.com/AndrewFSee/adia-structural-break and the
+# 7th-place writeup (index_of_dispersion). No thresholds are hard-coded.
+# ---------------------------------------------------------------------------
+def _log_disp(x: np.ndarray) -> float:
+    if len(x) < 3:
+        return 0.0
+    m = abs(float(x.mean()))
+    v = float(x.var())
+    return float(np.log10(v + 1e-300) - np.log10(m + 1e-300))
+
+
+@register("dispersion")
+def dispersion_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    a, b = values[periods == 0], values[periods == 1]
+    out: dict = {}
+    if len(a) < 10 or len(b) < 10:
+        return out
+    d_all, d_a, d_b = _log_disp(values), _log_disp(a), _log_disp(b)
+    out["logdisp_all"] = _safe(d_all)
+    out["logdisp_a"] = _safe(d_a)
+    out["logdisp_b"] = _safe(d_b)
+    out["logdisp_b_minus_a"] = _safe(d_b - d_a)
+    out["logdisp_abs_b_minus_a"] = _safe(abs(d_b - d_a))
+    out["logdisp_all_minus_a"] = _safe(d_all - d_a)  # how far the whole series moved from the before-relation
+    out["log_abs_mean_all"] = _safe(np.log10(abs(values.mean()) + 1e-300))
+    out["log_var_all"] = _safe(np.log10(values.var() + 1e-300))
+    out["mean_sign_all"] = float(np.sign(values.mean()))
+    for w in (50, 100, 250):
+        wa, wb = a[-w:], b[:w]
+        dwa, dwb = _log_disp(wa), _log_disp(wb)
+        out[f"logdisp_w{w}_b_minus_a"] = _safe(dwb - dwa)
+        out[f"logdisp_w{w}_b_minus_all"] = _safe(dwb - d_all)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# cumsum_dist / compress. Idea credit: the public solution
+# github.com/AndrewFSee/adia-structural-break (distribution distances on the
+# cumulative sum and first differences; zlib compressibility and normalised
+# compression distance between segments). Reimplemented from scratch.
+# ---------------------------------------------------------------------------
+def _dist_block(xa: np.ndarray, xb: np.ndarray, scale: float, prefix: str, out: dict) -> None:
+    from scipy.stats import energy_distance, wasserstein_distance
+
+    if len(xa) < 5 or len(xb) < 5:
+        return
+    w, e = wasserstein_distance(xa, xb), energy_distance(xa, xb)
+    out[f"{prefix}wasserstein"] = _safe(w)
+    out[f"{prefix}energy"] = _safe(e)
+    out[f"{prefix}wasserstein_z"] = _safe(w / (scale + EPS))
+    out[f"{prefix}energy_z"] = _safe(e / np.sqrt(scale + EPS))
+    out[f"{prefix}mean_diff"] = _safe(xb.mean() - xa.mean())
+    out[f"{prefix}std_ratio"] = _safe(xb.std() / (xa.std() + EPS))
+    qa, qb = np.percentile(xa, [10, 50, 90]), np.percentile(xb, [10, 50, 90])
+    for q, d in zip((10, 50, 90), qb - qa, strict=True):
+        out[f"{prefix}q{q}_diff"] = _safe(d)
+
+
+@register("cumsum_dist")
+def cumsum_dist_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    out: dict = {}
+    k0 = int((periods == 0).sum())
+    c = np.cumsum(values)  # raw, not de-meaned: keeps the drift
+    _dist_block(c[:k0], c[k0:], c.std(), "cumsum_", out)
+    d = np.diff(values)
+    _dist_block(d[: k0 - 1], d[k0 - 1 :], d.std(), "diff_", out)
+    return out
+
+
+def _zlib_ratio(x: np.ndarray) -> float:
+    import zlib
+
+    raw = np.ascontiguousarray(x, dtype=np.float32).tobytes()
+    return len(zlib.compress(raw, 9)) / max(len(raw), 1)
+
+
+def _ncd(xa: np.ndarray, xb: np.ndarray) -> float:
+    import zlib
+
+    ba, bb = np.ascontiguousarray(xa, np.float32).tobytes(), np.ascontiguousarray(xb, np.float32).tobytes()
+    ca, cb, cab = len(zlib.compress(ba, 9)), len(zlib.compress(bb, 9)), len(zlib.compress(ba + bb, 9))
+    return (cab - min(ca, cb)) / max(ca, cb, 1)
+
+
+@register("compress")
+def compress_group(values: np.ndarray, periods: np.ndarray) -> dict:
+    a, b = values[periods == 0], values[periods == 1]
+    out: dict = {}
+    if len(a) < 20 or len(b) < 20:
+        return out
+    za, zb = _zlib_ratio(a), _zlib_ratio(b)
+    out["zlib_all"] = _zlib_ratio(values)
+    out["zlib_a"], out["zlib_b"] = za, zb
+    out["zlib_b_minus_a"] = zb - za
+    h = len(a) // 2
+    out["zlib_a_halves_absdiff"] = abs(_zlib_ratio(a[:h]) - _zlib_ratio(a[h:]))
+    out["ncd_ab"] = _ncd(a, b)
+    for w in (50, 100, 250):
+        wa, wb = a[-w:], b[:w]
+        out[f"ncd_w{w}"] = _ncd(wa, wb)
+        out[f"zlib_w{w}_b_minus_a"] = _zlib_ratio(wb) - _zlib_ratio(wa)
+    return out

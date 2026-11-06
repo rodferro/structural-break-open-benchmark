@@ -49,6 +49,8 @@ def selection_key(cfg: Config) -> dict:
         for k in ("n_splits", "seed", "n_base", "n_interact", "n_final", "select_max_rounds", "lgb_params", "lgb_early_stopping")
     }
     d["selection_version"] = SELECTION_VERSION
+    if cfg.selection_method != "cv_gain":  # only when changed, so existing cache keys stay valid
+        d |= {k: getattr(cfg, k) for k in ("selection_method", "select_single_rounds", "select_single_params")}
     if cfg.exclude_features:  # only when set, so existing cache keys stay valid
         d["exclude_features"] = sorted(cfg.exclude_features)
     return d
@@ -56,7 +58,7 @@ def selection_key(cfg: Config) -> dict:
 
 def model_key(cfg: Config, model: str) -> dict:
     d = selection_key(cfg) | {"model": model, "early_stop_on_val_fold": cfg.early_stop_on_val_fold}
-    prefix = {"lgb": "lgb_", "cat": "cat_"}[model]
+    prefix = {"lgb": "lgb_", "lgb5": "lgb5_", "cat": "cat_"}[model]
     d |= {k: v for k, v in cfg.to_dict().items() if k.startswith(prefix)}
     return d
 

@@ -19,7 +19,7 @@ turns the notebook into a tested package, and re-evaluates the model honestly.
 | | ROC AUC |
 |---|---|
 | Public leaderboard, submission #28 (original pipeline with TabPFN, March 2026) | **0.809** |
-| Reduced-test holdout, current default (101 series, scored once on the frozen config) | **0.788** |
+| Reduced-test holdout, previous default (v2 features only; 101 series, scored once) | **0.788** |
 
 *Holdout caveat:* one earlier score on this holdout was seen for the same
 configuration before the holdout was sealed; it was not used for any decision.
@@ -28,11 +28,15 @@ With 101 series the holdout is a noisy check (a standard error of roughly 0.05).
 **Nested cross-validation** (training data only) is reported as a range across
 seeds, not as one number, because the inner-seed spread is as large as most
 differences between configurations. Cross-validation numbers are kept out of
-the repository by rule, so qualitatively: every seed of the current default
-lands below the public-leaderboard score and below submission #28's own
-(leaky) validation estimate, the default sits slightly above submission #28's
-pipeline re-run honestly, and no feature change tried on CPU moved the range
-(see *Validation*).
+the repository by rule, so qualitatively:
+
+- *Previous default* (v2 features only): every seed lands below the
+  public-leaderboard score.
+- *Current default* (v2 + `dispersion` + `cumsum_dist` + `compress`, see
+  *Comparison with a public solution*): every seed lands far above the
+  previous default's range and above the public-leaderboard score, and
+  slightly above a public solution's own features evaluated the same way.
+  The holdout has not been scored for this configuration yet.
 
 ## Approach
 
@@ -43,7 +47,15 @@ pipeline re-run honestly, and no feature change tried on CPU moved the range
    (Cohen's d), boundary-local differences over windows of 3 to 256 points,
    statistics of transformed series (z-score, rank, |x|, rolling mean/std),
    outlier and jump counts, a Chow F-statistic, Welch t, KS, Levene and
-   Wasserstein distances.
+   Wasserstein distances. Optional, separately switchable groups
+   (`sbreak/feature_groups.py`, `Config.feature_groups`) add more; the default
+   enables three of them:
+   - `dispersion`: the index of dispersion var/|mean| of the whole series,
+     each segment and boundary windows, and how it changes at the boundary;
+   - `cumsum_dist`: distribution distances between the two parts of the raw
+     cumulative sum, and of the first differences;
+   - `compress`: zlib compressibility of each segment and window, and the
+     normalised compression distance between before and after.
 2. **Feature selection** (`sbreak/selection.py`). LightGBM gain importance over
    5 folds ranks the raw features. Submission #28 kept the top 80, added
    pairwise interactions (×, ÷, |×|) among the top 20, and kept the top 100
@@ -241,13 +253,58 @@ CPU budget.
   worse.
 - Top 150 or 225 features instead of 200: no measurable change.
 
-**Conclusion.** None of the changes beat the noise floor, so the default is
-unchanged. The groups that *looked* most informative (top importance ranks)
+**Conclusion.** None of the changes beat the noise floor, so this campaign left
+the default unchanged (the comparison with a public solution, below, later
+found the features that did). The groups that *looked* most informative (top importance ranks)
 hurt the most: on this data, LightGBM gain is a poor guide to whether a new
 feature generalises, which is why every candidate is judged by nested CV
 rather than by importance. The groups and exclusion presets stay in the code,
 off by default, so they can be re-tested (for example averaged over several
 seeds) without new code.
+
+### Comparison with a public solution
+
+A public solution to the same benchmark
+([AndrewFSee/adia-structural-break](https://github.com/AndrewFSee/adia-structural-break))
+reports a cross-validated AUC far above ours on the same training series. We
+reproduced its number exactly with its own script. Its protocol has two leaks
+we had already removed from ours: it ranks features on all rows before cross
+validation, and it early-stops on the fold it scores. We then exported its
+feature matrix and re-measured it in our nested CV, with selection inside the
+folds, under both its model (an average of five LightGBMs) and ours.
+
+- **The leaks were small.** Its features stay far above ours under honest
+  nested CV, with either model. The gap was in the features, not the
+  validation.
+- **One whole-series quantity carries most of it**: the index of dispersion
+  var/|mean|. A large family of series in this benchmark satisfies a fixed
+  variance-to-mean relation when there is no break, and a break moves the
+  series off it. That family is the one our earlier error analysis flagged as
+  the weak spot, and nearly all of the gain is there. This is a property of
+  how the benchmark data were generated, not a general-purpose break test.
+  Our features had the mean and the spread separately, but not their ratio,
+  which trees cannot easily form. (The solution's code also contains a few
+  hand-tuned thresholds on related quantities; on this data they are constant
+  and carry nothing, and we use none.)
+- **Two more ideas add a clear further gain**: distribution distances on the
+  raw (not de-meaned) cumulative sum and on first differences, and zlib
+  compressibility of the segments. Leave-one-group-out over the solution's
+  groups pointed to these; the rest of its groups were redundant with ours.
+- We reimplemented these three ideas from scratch as the `dispersion`,
+  `cumsum_dist` and `compress` groups (no code was copied; the repository has
+  no license). Each gain reproduced under nested CV with three seeds, and
+  together they score slightly above the solution's full feature set
+  evaluated the same way. They are now the default.
+- From the 7th-place writeup of the original challenge
+  ([inni-dynamics](https://inni-dynamics.vercel.app/competitions/solution))
+  we tried after/before ratios of segment descriptors (`seg_ratio`),
+  boundary windows at 10/30/60% of each segment (`win_ratio`), and the same
+  descriptors on the cumulative sum and absolute value (`xf_cumsum`,
+  `xf_abs`). Its top feature is also an index of dispersion. On top of the
+  adopted groups, `seg_ratio` and `win_ratio` made no difference and
+  `xf_cumsum` was slightly worse. `xf_abs` gave a small gain that was
+  consistent across three seeds but well below the adoption bar, for about 40%
+  more compute, so it is not in the default. All four stay available.
 
 ### Sealed holdout
 
@@ -272,9 +329,10 @@ python3.12 -m venv .venv        # 3.11 also works (the CrunchDAO runner used 3.1
 
 # experiments (outputs under runs/, gitignored; numbers go in reports/private/)
 .venv/bin/python -m scripts.build_features --feature-set v2           # base table -> .cache/
-.venv/bin/python -m scripts.build_features --groups scan tests selfnorm  # one cache per group
-.venv/bin/python -m scripts.evaluate --tag baseline                   # nested CV, default config
-.venv/bin/python -m scripts.evaluate --groups tests --tag tests       # default + one group
+.venv/bin/python -m scripts.build_features --groups dispersion cumsum_dist compress  # one cache per group
+.venv/bin/python -m scripts.evaluate --tag default                    # nested CV, default config
+.venv/bin/python -m scripts.evaluate --groups --tag v2_only           # v2 base features, no groups
+.venv/bin/python -m scripts.evaluate --groups dispersion cumsum_dist compress xf_abs --tag plus_xf_abs
 .venv/bin/python -m scripts.evaluate --set 'exclude_features=["@audit"]' --tag audit_drop
 .venv/bin/python -m scripts.evaluate --set seed=12345 --tag baseline_seed2   # noise floor
 .venv/bin/python -m scripts.compare baseline tests audit_drop         # paired deltas, folds won, compute
@@ -299,7 +357,9 @@ gitignored and should never be shared.
 main.py                    CrunchDAO entry point (train / infer)
 sbreak/features.py         per-series features (v1 = submission #28, v2, v3)
 sbreak/extra_features.py   additional two-sample / dependence features (v3)
-sbreak/feature_groups.py   optional, separately ablatable feature groups (scan, tests, selfnorm)
+sbreak/feature_groups.py   separately switchable feature groups: dispersion, cumsum_dist, compress
+                           (default on); scan, tests, selfnorm, seg_ratio, win_ratio,
+                           xf_cumsum, xf_abs (off)
 sbreak/exclusions.py       named lists of base features to drop before selection (@audit)
 sbreak/selection.py        LightGBM-importance selection (optional interaction stage)
 sbreak/models.py           LightGBM / CatBoost with pickle-free persistence

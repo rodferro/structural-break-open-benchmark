@@ -75,6 +75,50 @@ class LGBModel:
 # ---------------------------------------------------------------------------
 # CatBoost
 # ---------------------------------------------------------------------------
+class LGBMultiModel:
+    """Average of several LightGBM configurations (Config.lgb5_configs), each early-stopped.
+
+    Model seeds are offset by Config.seed so seed replicates differ.
+    """
+
+    name = "lgb5"
+
+    def __init__(self, cfg: Config, boosters: list | None = None):
+        self.cfg = cfg
+        self.boosters = boosters or []
+
+    def fit(self, X_tr, y_tr, X_es, y_es):
+        self.boosters = []
+        for c in self.cfg.lgb5_configs:
+            params = {"objective": "binary", "metric": "auc", "verbosity": -1, **c}
+            params["seed"] = int(c.get("seed", 0)) + int(self.cfg.seed)
+            b = lgb.train(
+                params,
+                lgb.Dataset(X_tr, label=y_tr),
+                num_boost_round=self.cfg.lgb5_max_rounds,
+                valid_sets=[lgb.Dataset(X_es, label=y_es)],
+                callbacks=[lgb.early_stopping(self.cfg.lgb5_early_stopping, verbose=False)],
+            )
+            self.boosters.append(b)
+        return self
+
+    def predict(self, X) -> np.ndarray:
+        return np.mean([b.predict(X, num_iteration=b.best_iteration or None) for b in self.boosters], axis=0)
+
+    def save(self, directory: Path, tag: str) -> list[str]:
+        files = []
+        for j, b in enumerate(self.boosters):
+            fname = f"lgb5_{tag}_m{j}.txt"
+            b.save_model(str(directory / fname), num_iteration=b.best_iteration or None)
+            files.append(fname)
+        return files
+
+    @classmethod
+    def load(cls, cfg: Config, directory: Path, tag: str) -> "LGBMultiModel":
+        boosters = [lgb.Booster(model_file=str(directory / f"lgb5_{tag}_m{j}.txt")) for j in range(len(cfg.lgb5_configs))]
+        return cls(cfg, boosters)
+
+
 class CatModel:
     name = "cat"
 
@@ -129,7 +173,7 @@ class CatModel:
         return cls(cfg, m)
 
 
-MODEL_CLASSES = {c.name: c for c in (LGBModel, CatModel)}
+MODEL_CLASSES = {c.name: c for c in (LGBModel, LGBMultiModel, CatModel)}
 
 
 def library_versions() -> dict[str, str]:
