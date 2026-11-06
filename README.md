@@ -11,19 +11,25 @@ competition has since closed. This repository reproduces the failure, fixes it,
 turns the notebook into a tested package, and re-evaluates the model honestly.
 
 > Competition data, trained artifacts and non-public scores are deliberately
-> **not** in this repository (see `.gitignore`). The one exception is the single
-> reduced-test holdout score in *Results*; cross-validation numbers stay local.
+> **not** in this repository (see `.gitignore`). The exceptions are the reduced-test
+> holdout scores in *Results*; cross-validation numbers stay local.
 
 ## Results
 
 | | ROC AUC |
 |---|---|
 | Public leaderboard, submission #28 (original pipeline with TabPFN, March 2026) | **0.809** |
-| Reduced-test holdout, previous default (v2 features only; 101 series, scored once) | **0.788** |
+| Reduced-test holdout, previous default (v2 features only; 101 series) | **0.788** |
+| Reduced-test holdout, current default (v2 + `dispersion` + `cumsum_dist` + `compress`; same 101 series, scored once) | **0.926** |
 
-*Holdout caveat:* one earlier score on this holdout was seen for the same
-configuration before the holdout was sealed; it was not used for any decision.
-With 101 series the holdout is a noisy check (a standard error of roughly 0.05).
+*Holdout caveats:* each configuration was frozen before it was scored, and no
+holdout score was used to choose features or settings. For the previous default,
+one score was seen before the holdout was sealed and it was later re-scored once
+(same result; the pipeline is deterministic). With 101 series the holdout is a
+noisy check: a standard error of roughly 0.05 at the previous default's score
+and 0.035 at the current one (Hanley–McNeil, assuming the training base rate).
+Read the current default's score as consistent with its nested-CV range, not as
+evidence that it does better than that range.
 
 **Nested cross-validation** (training data only) is reported as a range across
 seeds, not as one number, because the inner-seed spread is as large as most
@@ -36,7 +42,7 @@ the repository by rule, so qualitatively:
   *Comparison with a public solution*): every seed lands far above the
   previous default's range and above the public-leaderboard score, and
   slightly above a public solution's own features evaluated the same way.
-  The holdout has not been scored for this configuration yet.
+  Its holdout score is consistent with that range.
 
 ## Approach
 
